@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
-    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
+    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO (Связь с сервером) -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -130,7 +130,9 @@ ASSETS.poacher.src = 'img/poacher.png';
 // --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
-const socket = io("https://forest-fight-server.onrender.com"); // Адрес вашего сервера
+
+// !!! ЗДЕСЬ ВАША ССЫЛКА НА RENDER !!!
+const socket = io("https://forest-fight-server.onrender.com"); 
 
 const V = {
     add: (a, b) => ({x: a.x + b.x, y: a.y + b.y}),
@@ -171,7 +173,6 @@ class Game {
         window.addEventListener('resize', () => this.fitScreen());
 
         this.initArena();
-        // this.initUnits(); // Юниты инициализируются ПОСЛЕ получения карты от сервера
         this.bindInput();
         
         this.setupNetwork(); // Настраиваем сокеты
@@ -282,12 +283,15 @@ class Game {
         const scheduledUnitId = this.turnOrder[this.turnStep % 4];
         let scheduledUnit = this.units[scheduledUnitId];
 
+        // Проверяем, жив ли юнит
         if (scheduledUnit.isDead) {
             const ally = this.units.find(u => u.team === scheduledUnit.team && u.id !== scheduledUnitId && !u.isDead);
             if (ally) {
+                // Если друг жив - передаем ход ему
                 this.activeUnitId = ally.id;
                 this.floatText(ally.x, ally.y, "ЗА ДРУГА!", "#f1c40f");
             } else {
+                // Если и друг мертв - пропускаем ход (скорее всего игра уже закончится)
                 this.nextTurnIndex();
                 return;
             }
@@ -552,47 +556,79 @@ class Game {
         }
     }
 
-    fitScreen() {
-        const aspect = 16 / 9;
-        let w = window.innerWidth;
-        let h = window.innerHeight;
-        if (w / h > aspect) w = h * aspect;
-        else h = w / aspect;
-        this.container.style.width = w + 'px';
-        this.container.style.height = h + 'px';
-        this.canvas.width = CFG.width;
-        this.canvas.height = CFG.height;
-    }
-
-    getMousePos(evt) {
-        const rect = this.canvas.getBoundingClientRect();
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
-        const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
-        return {
-            x: (clientX - rect.left) * scaleX,
-            y: (clientY - rect.top) * scaleY
-        };
-    }
-
-    initArena() {
-        const pad = CFG.wallPadding;
-        const c = CFG.cornerCut;
-        const w = CFG.width;
-        const h = CFG.height;
-        const points = [
-            {x: pad + c, y: pad}, {x: w - pad - c, y: pad}, 
-            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c}, 
-            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad}, 
-            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
-        ];
-        this.walls = [];
-        for(let i=0; i<points.length; i++) {
-            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
+    drawBackground() {
+        const ctx = this.ctx;
+        // Попытка отрисовки картинки
+        if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
+            ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
+        } else {
+            // Если картинки нет - рисуем процедурный фон
+            ctx.fillStyle = '#2d5a27'; ctx.fillRect(0,0, CFG.width, CFG.height);
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 10;
+            ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
+            ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
+            ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
+            ctx.beginPath();
+            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
+            ctx.stroke();
         }
     }
 
+    drawUnit(u) {
+        const ctx = this.ctx;
+        const r = CFG.radius;
+        ctx.save(); ctx.translate(u.x, u.y);
+        
+        if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.5)';
+
+        ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
+
+        if (this.state==='AIMING' && u.id === this.activeUnitId && !u.isDead) {
+            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2);
+            ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
+        }
+
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
+        
+        const img = ASSETS[u.imgKey];
+        if (img && img.complete && img.naturalWidth !== 0) {
+            const sSize = Math.min(img.width, img.height);
+            const sx = (img.width - sSize) / 2;
+            const sy = (img.height - sSize) / 2;
+            ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
+        } else {
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
+            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(u.emoji, 0, 5); 
+        }
+        ctx.restore();
+
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
+        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
+
+        const pct = u.hp/u.maxHp;
+        ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
+        
+        if (u.isDead) {
+            if (u.reviveCount >= CFG.maxRevives) {
+                ctx.fillStyle = '#555'; 
+                ctx.fillRect(-28, r+12, 56, 6); 
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; 
+                ctx.fillText('❌', 0, -r/2);
+            } else {
+                ctx.fillStyle = '#3498db'; 
+                ctx.fillRect(-28, r+12, 56*pct, 6);
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; 
+                ctx.fillText('💀', 0, -r/2);
+            }
+        } else {
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c';
+            ctx.fillRect(-28, r+12, 56*pct, 6);
+        }
+
+        ctx.restore();
+    }
+    
     getDistToLine(u, p1, p2) {
         const dx = p2.x - p1.x; const dy = p2.y - p1.y;
         const lenW = Math.sqrt(dx*dx + dy*dy);
@@ -699,7 +735,6 @@ class Game {
             list.forEach(u => {
                 const d = document.createElement('div');
                 d.className = `hero-icon ${u.isDead?'dead':''}`;
-                if (u.id === this.activeUnitId) d.classList.add('active');
                 
                 const img = ASSETS[u.imgKey];
                 if(img && img.complete && img.naturalWidth !== 0) {
@@ -732,19 +767,7 @@ class Game {
     loop() {
         this.update();
         this.ctx.clearRect(0,0, CFG.width, CFG.height);
-        
-        if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
-            this.ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
-        } else {
-            this.ctx.fillStyle = '#2d5a27'; this.ctx.fillRect(0,0, CFG.width, CFG.height);
-            this.ctx.strokeStyle = 'rgba(255,255,255,0.1)'; this.ctx.lineWidth = 10;
-            this.ctx.beginPath(); this.ctx.moveTo(CFG.width/2, 0); this.ctx.lineTo(CFG.width/2, CFG.height); this.ctx.stroke();
-            this.ctx.beginPath(); this.ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); this.ctx.stroke();
-            this.ctx.strokeStyle = '#1e3c1b'; this.ctx.lineWidth = 5;
-            this.ctx.beginPath();
-            this.walls.forEach(w => { this.ctx.moveTo(w.p1.x, w.p1.y); this.ctx.lineTo(w.p2.x, w.p2.y); });
-            this.ctx.stroke();
-        }
+        this.drawBackground();
 
         if (this.state === 'AIMING' && this.drag.active) this.drawAim();
         this.units.forEach(u => this.drawUnit(u));
@@ -754,7 +777,7 @@ class Game {
 
 // Запуск с чтением HASH
 window.onload = () => {
-    const hash = window.location.search.substring(1); 
+    const hash = window.location.hash.substring(1); 
     const params = new URLSearchParams(hash);
     const p1 = params.get('p1');
     const p2 = params.get('p2');
