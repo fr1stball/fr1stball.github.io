@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ForestFight: Лобби</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700;900&display=swap');
+        
+        body {
+            margin: 0; padding: 0;
+            background: url('img/menu_bg.jpg') no-repeat center center fixed;
+            background-size: cover;
+            height: 100vh; width: 100vw;
+            overflow: hidden;
+            position: relative;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: flex-start;
+            font-family: 'Rubik', sans-serif;
+            user-select: none;
+        }
+
+        /* Контейнер кнопок */
+        .buttons-container {
+            position: absolute;
+            top: 48%; /* Высота кнопок */
+            left: 0; 
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 70px;
+            transition: opacity 0.5s; /* Плавное исчезновение */
+        }
+
+        /* Прозрачная кнопка */
+        .ghost-btn {
+            display: block;
+            width: 270px;
+            height: 90px;
+            color: transparent; 
+            background: transparent;
+            text-decoration: none;
+            cursor: pointer;
+            border-radius: 15px;
+            /* border: 2px solid rgba(255, 0, 0, 0.5); УДАЛИТЕ, ЕСЛИ МЕШАЕТ */
+        }
+
+        .ghost-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+        }
+
+        .ghost-btn.disabled { cursor: default; }
+        .ghost-btn.disabled:hover { background: transparent; box-shadow: none; }
+
+        /* --- СЛОЙ С ВИДЕО --- */
+        #transition-layer {
+            display: none; /* Скрыт по умолчанию */
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: black; /* Черный фон на всякий случай */
+            z-index: 9999;
+        }
+
+        #transition-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Видео заполнит весь экран */
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- КНОПКИ -->
+    <div class="buttons-container" id="btn-container">
+        <!-- Вместо прямых ссылок используем onclick -->
+        <div class="ghost-btn" onclick="Menu.playTransition()">Быстрая игра</div>
+        <div class="ghost-btn" onclick="Menu.playTransition()">Ранговый матч</div>
+        <div class="ghost-btn disabled">2 на 2</div>
+    </div>
+
+    <!-- СЛОЙ ПЕРЕХОДА (АНИМАЦИЯ) -->
+    <div id="transition-layer">
+        <!-- playsinline важно для мобильных -->
+        <video id="transition-video" src="img/transition.mp4" playsinline></video>
+    </div>
+
+<script>
+const Menu = {
+    playTransition() {
+        const btns = document.getElementById('btn-container');
+        const layer = document.getElementById('transition-layer');
+        const video = document.getElementById('transition-video');
+
+        // 1. Скрываем кнопки
+        btns.style.opacity = '0';
+        
+        // Даем кнопкам исчезнуть (0.5 сек), потом включаем видео
+        setTimeout(() => {
+            btns.style.display = 'none'; // Убираем совсем
+            layer.style.display = 'block'; // Показываем слой видео
+            
+            // 2. Запускаем видео
+            video.play().catch(error => {
+                console.log("Автозапуск заблокирован браузером, переходим сразу:", error);
+                window.location.href = 'index.html';
+            });
+
+            // 3. Когда видео закончится - переходим
+            video.onended = () => {
+                window.location.href = 'index.html';
+            };
+        }, 300); // Небольшая задержка перед видео
+    }
+};
+</script>
+
+</body>
+</html>

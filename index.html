@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Лесная Битва: Final</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
+
+        body {
+            margin: 0; padding: 0;
+            background-color: #1e272e;
+            height: 100vh; width: 100vw;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Rubik', sans-serif;
+            user-select: none;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            background: #2d5a27;
+            width: 100vw;
+            height: 56.25vw; /* 16:9 */
+            max-height: 100vh;
+            max-width: 177.78vh;
+            box-shadow: 0 0 50px rgba(0,0,0,0.8);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .turn-badge {
+            margin-top: 2%;
+            padding: 1% 4%;
+            background: rgba(0,0,0,0.85);
+            border: 3px solid #fff;
+            border-radius: 12px;
+            color: #fff;
+            font-size: 32px;
+            text-transform: uppercase;
+            font-weight: bold;
+            text-shadow: 1px 1px 0 #000;
+            transition: 0.3s;
+        }
+        .turn-badge.green { border-color: #2ecc71; color: #2ecc71; }
+        .turn-badge.red { border-color: #e74c3c; color: #e74c3c; }
+        .turn-badge.win { border-color: #f1c40f; color: #f1c40f; font-size: 40px;}
+
+        .ui-panels {
+            position: absolute;
+            bottom: 4%;
+            width: 92%;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .hero-icon {
+            width: 80px; height: 80px;
+            border-radius: 50%;
+            background: #444;
+            border: 3px solid #fff;
+            background-size: cover;
+            background-position: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        }
+        .hero-icon.dead { filter: grayscale(1); opacity: 0.5; }
+
+        .floater {
+            position: absolute;
+            font-weight: 900;
+            font-size: 36px;
+            animation: floatUp 1s forwards;
+            text-shadow: 2px 2px 0 #000;
+            z-index: 100;
+        }
+        @keyframes floatUp { to { transform: translateY(-60px); opacity: 0; } }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="arena"></canvas>
+    <div class="ui-layer">
+        <div id="turn-display" class="turn-badge green">Ход Лесхоза</div>
+        <div class="ui-panels">
+            <div id="panel-green" style="display:flex; gap:10px;"></div>
+            <div id="panel-red" style="display:flex; gap:10px;"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+const CFG = {
+    width: 1600,
+    height: 900,
+    
+    // ГРАНИЦЫ
+    wallPadding: 145, 
+    cornerCut: 210,   
+    
+    // ФИЗИКА
+    radius: 40,
+    friction: 0.985, // Трение
+    wallBounce: 0.7, // Отскок от стен
+    stopSpeed: 0.15,
+    
+    // СКОРОСТЬ
+    launchSpeed: 45, // Фиксированная скорость полета
+    
+    // ТОЧНОСТЬ
+    subSteps: 10,
+
+    baseHp: 300,
+    baseDmg: 50,
+    reviveAmount: 60
+};
+
+const ASSETS = {
+    bg: new Image(),
+    ranger: new Image(),
+    bear: new Image(),
+    wolf: new Image(),
+    poacher: new Image()
+};
+
+ASSETS.bg.src      = 'img/bg.png';
+ASSETS.ranger.src  = 'img/ranger.png';
+ASSETS.bear.src    = 'img/bear.png';
+ASSETS.wolf.src    = 'img/wolf.png';
+ASSETS.poacher.src = 'img/poacher.png';
+
+const V = {
+    add: (a, b) => ({x: a.x + b.x, y: a.y + b.y}),
+    sub: (a, b) => ({x: a.x - b.x, y: a.y - b.y}),
+    mult: (v, n) => ({x: v.x * n, y: v.y * n}),
+    mag: (a) => Math.sqrt(a.x*a.x + a.y*a.y),
+    norm: (a) => { let m = Math.sqrt(a.x*a.x + a.y*a.y); return m===0 ? {x:0,y:0} : {x:a.x/m, y:a.y/m}; },
+    dist: (a, b) => Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2)
+};
+
+class Game {
+    constructor() {
+        this.container = document.getElementById('game-container');
+        this.canvas = document.getElementById('arena');
+        this.ctx = this.canvas.getContext('2d');
+        
+        this.units = [];
+        this.walls = [];
+        this.currentTeam = 'green';
+        this.state = 'AIMING'; 
+        this.drag = { active: false, start: {x:0,y:0}, curr: {x:0,y:0}, unitId: null };
+
+        this.fitScreen();
+        window.addEventListener('resize', () => this.fitScreen());
+
+        this.initArena();
+        this.initUnits();
+        this.bindInput();
+        this.loop();
+    }
+
+    fitScreen() {
+        const aspect = 16 / 9;
+        let w = window.innerWidth;
+        let h = window.innerHeight;
+        if (w / h > aspect) w = h * aspect;
+        else h = w / aspect;
+        this.container.style.width = w + 'px';
+        this.container.style.height = h + 'px';
+        this.canvas.width = CFG.width;
+        this.canvas.height = CFG.height;
+    }
+
+    getMousePos(evt) {
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+        const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+        return {
+            x: (clientX - rect.left) * scaleX,
+            y: (clientY - rect.top) * scaleY
+        };
+    }
+
+    initArena() {
+        const pad = CFG.wallPadding;
+        const c = CFG.cornerCut;
+        const w = CFG.width;
+        const h = CFG.height;
+        const points = [
+            {x: pad + c, y: pad}, {x: w - pad - c, y: pad}, 
+            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c}, 
+            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad}, 
+            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
+        ];
+        this.walls = [];
+        for(let i=0; i<points.length; i++) {
+            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
+        }
+    }
+
+    initUnits() {
+        const spawnX = CFG.wallPadding + CFG.cornerCut + 30;
+        const midY = CFG.height / 2;
+        const spread = 130;
+        this.units = [];
+        this.addUnit('green', 'Лесник', 'ranger', '👮‍♂️', spawnX, midY - spread);
+        this.addUnit('green', 'Медведь', 'bear',   '🐻', spawnX, midY + spread);
+        this.addUnit('red', 'Браконьер', 'poacher', '👺', CFG.width - spawnX, midY - spread);
+        this.addUnit('red', 'Волк',      'wolf',    '🐺', CFG.width - spawnX, midY + spread);
+        this.updateUI();
+    }
+
+    addUnit(team, name, imgKey, emoji, x, y) {
+        this.units.push({
+            id: this.units.length,
+            team, name, imgKey, emoji,
+            x, y, vx: 0, vy: 0,
+            hp: CFG.baseHp, maxHp: CFG.baseHp, dmg: CFG.baseDmg,
+            isDead: false
+        });
+    }
+
+    bindInput() {
+        const onDown = (e) => {
+            if (this.state !== 'AIMING') return;
+            const pos = this.getMousePos(e);
+            const hero = this.units.find(u => !u.isDead && u.team === this.currentTeam && V.dist(pos, u) < CFG.radius * 2);
+            if (hero) {
+                this.drag.active = true;
+                this.drag.unitId = hero.id;
+                this.drag.start = pos;
+                this.drag.curr = pos;
+            }
+        };
+        const onMove = (e) => {
+            if (this.drag.active) this.drag.curr = this.getMousePos(e);
+        };
+        const onUp = (e) => {
+            if (this.drag.active) {
+                if (e.button === 2) { // ПКМ - Отмена
+                    this.drag.active = false;
+                    return;
+                }
+                this.drag.active = false;
+                const vec = V.sub(this.drag.start, this.drag.curr);
+                if (V.mag(vec) > 10) this.shoot(this.drag.unitId, vec);
+            }
+        };
+
+        this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.drag.active = false; });
+        this.canvas.addEventListener('mousedown', onDown);
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        this.canvas.addEventListener('touchstart', onDown, {passive: false});
+        this.canvas.addEventListener('touchmove', onMove, {passive: false});
+        window.addEventListener('touchend', onUp);
+    }
+
+    shoot(id, rawVec) {
+        const u = this.units[id];
+        const dir = V.norm(rawVec);
+        u.vx = dir.x * CFG.launchSpeed;
+        u.vy = dir.y * CFG.launchSpeed;
+        this.state = 'MOVING';
+        this.updateBanner('Движение...', 'grey');
+    }
+
+    // --- ФИЗИКА ---
+    update() {
+        if (this.state === 'MOVING') {
+            let active = false;
+            const steps = CFG.subSteps;
+            
+            // Физический под-цикл
+            for(let s=0; s<steps; s++) {
+                this.units.forEach(u => {
+                    // Движение
+                    u.x += u.vx / steps; 
+                    u.y += u.vy / steps;
+                    
+                    // Стены
+                    let hitWall = false;
+                    for (let w of this.walls) {
+                        if (this.solveWall(u, w)) hitWall = true;
+                    }
+                    
+                    // Хилл (только в первом сабстепе, чтобы не спамить)
+                    if(s===0 && hitWall && u.team === this.currentTeam && !u.isDead && V.mag({x:u.vx,y:u.vy}) > 1) {
+                       if(Math.random() < 0.1) this.revive(u.team);
+                    }
+                });
+
+                // Столкновения
+                for (let i=0; i<this.units.length; i++) {
+                    for (let j=i+1; j<this.units.length; j++) {
+                        this.solveCollision(this.units[i], this.units[j]);
+                    }
+                }
+            }
+
+            // Трение и проверка остановки (ОДИН РАЗ ЗА КАДР!)
+            this.units.forEach(u => {
+                u.vx *= CFG.friction;
+                u.vy *= CFG.friction;
+                
+                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true;
+                else { u.vx = 0; u.vy = 0; }
+            });
+
+            if (!active) this.endTurn();
+        }
+    }
+
+    getDistToLine(u, p1, p2) {
+        const dx = p2.x - p1.x; const dy = p2.y - p1.y;
+        const lenW = Math.sqrt(dx*dx + dy*dy);
+        const nx = dx/lenW; const ny = dy/lenW;
+        const t = ((u.x - p1.x)*nx + (u.y - p1.y)*ny);
+        let cx, cy;
+        if(t < 0) { cx = p1.x; cy = p1.y; }
+        else if(t > lenW) { cx = p2.x; cy = p2.y; }
+        else { cx = p1.x + t*nx; cy = p1.y + t*ny; }
+        return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
+    }
+
+    solveWall(u, w) {
+        const dist = this.getDistToLine(u, w.p1, w.p2);
+        if (dist < CFG.radius) {
+            const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
+            const lenW = Math.sqrt(dx*dx + dy*dy);
+            const nx = dx/lenW; const ny = dy/lenW;
+            const t = ((u.x - w.p1.x)*nx + (u.y - w.p1.y)*ny);
+            let cx = w.p1.x + t*nx; let cy = w.p1.y + t*ny; 
+            if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
+
+            const nxColl = (u.x - cx) / dist; 
+            const nyColl = (u.y - cy) / dist;
+            
+            u.x += nxColl * (CFG.radius - dist);
+            u.y += nyColl * (CFG.radius - dist);
+            
+            const dp = u.vx * nxColl + u.vy * nyColl;
+            u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
+            u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
+            return true;
+        }
+        return false;
+    }
+
+    solveCollision(u1, u2) {
+        const dx = u2.x - u1.x; const dy = u2.y - u1.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < CFG.radius * 2) {
+            const nx = dx / dist; const ny = dy / dist;
+            const overlap = (CFG.radius * 2 - dist) / 2;
+            u1.x -= nx * overlap; u1.y -= ny * overlap;
+            u2.x += nx * overlap; u2.y += ny * overlap;
+            const rvx = u1.vx - u2.vx; const rvy = u1.vy - u2.vy;
+            const velNormal = rvx * nx + rvy * ny;
+            if (velNormal < 0) return;
+            
+            const impulse = velNormal; 
+            u1.vx -= impulse * nx; u1.vy -= impulse * ny;
+            u2.vx += impulse * nx; u2.vy += impulse * ny;
+            
+            const impact = Math.abs(impulse);
+            if (impact > 1) {
+                if (u1.team === u2.team) {
+                    if (u1.team === this.currentTeam && this.state === 'MOVING') this.revive(u1.team);
+                } else {
+                    if (this.currentTeam === u1.team && !u2.isDead) this.dmg(u2, u1.dmg);
+                    else if (this.currentTeam === u2.team && !u1.isDead) this.dmg(u1, u2.dmg);
+                }
+            }
+        }
+    }
+
+    dmg(u, amt) {
+        if(u.isDead) return;
+        u.hp -= amt;
+        if(!u.lastDmg || Date.now() - u.lastDmg > 500) {
+            this.floatText(u.x, u.y, `-${Math.round(amt)}`, '#e74c3c');
+            u.lastDmg = Date.now();
+        }
+        if (u.hp <= 0) { u.hp=0; u.isDead=true; u.vx*=0.5; u.vy*=0.5; }
+        this.updateUI();
+    }
+
+    revive(team) {
+        const dead = this.units.filter(u => u.team === team && u.isDead);
+        dead.forEach(u => {
+            u.hp += CFG.reviveAmount;
+            if(u.hp > 0) { u.isDead = false; this.floatText(u.x, u.y, `+${CFG.reviveAmount}`, '#2ecc71'); }
+        });
+        if(dead.length > 0) this.updateUI();
+    }
+
+    endTurn() {
+        const gLive = this.units.some(u => u.team==='green' && !u.isDead);
+        const rLive = this.units.some(u => u.team==='red' && !u.isDead);
+        if(!gLive) return this.updateBanner('Победа Браконьеров', 'win');
+        if(!rLive) return this.updateBanner('Победа Лесхоза', 'win');
+        this.currentTeam = this.currentTeam === 'green' ? 'red' : 'green';
+        this.updateBanner(this.currentTeam === 'green' ? 'Ход Лесхоза' : 'Ход Браконьеров', this.currentTeam === 'green' ? 'green' : 'red');
+        this.state = 'AIMING';
+        this.drag.active = false;
+    }
+
+    // --- ПРЕДСКАЗАНИЕ "RAYCAST" ---
+    // Учитывает радиус шара (шагает центром)
+    predictHit(u, vec) {
+        const maxDist = 2500; 
+        const dir = V.norm(vec);
+        
+        let cx = u.x; let cy = u.y;
+        const step = 10;
+        
+        for(let d=0; d<maxDist; d+=step) {
+            cx += dir.x * step;
+            cy += dir.y * step;
+
+            // СТЕНЫ
+            for(let w of this.walls) {
+                // Дистанция от центра шара до стены
+                const dist = this.getDistToLine({x:cx,y:cy}, w.p1, w.p2);
+                
+                if(dist < CFG.radius) {
+                    const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
+                    const lenW = Math.sqrt(dx*dx + dy*dy);
+                    const nx = dx/lenW; const ny = dy/lenW; 
+                    
+                    // Вектор нормали к стене
+                    const wnx = -ny; const wny = nx;
+                    
+                    const dot = dir.x*wnx + dir.y*wny;
+                    
+                    return { 
+                        type: 'wall', 
+                        x: cx, y: cy, 
+                        rx: dir.x - 2*dot*wnx, 
+                        ry: dir.y - 2*dot*wny 
+                    };
+                }
+            }
+
+            // ЮНИТЫ
+            for(let other of this.units) {
+                if(other.id === u.id || other.isDead) continue;
+                
+                const dist = Math.sqrt((cx - other.x)**2 + (cy - other.y)**2);
+                
+                // Если центры сблизились на 2 радиуса - это удар
+                if(dist < CFG.radius * 2) {
+                    // Нормаль столкновения
+                    let nx = cx - other.x; let ny = cy - other.y;
+                    const ln = Math.sqrt(nx*nx + ny*ny);
+                    nx/=ln; ny/=ln;
+                    
+                    const dot = dir.x*nx + dir.y*ny;
+                    
+                    return { 
+                        type: 'unit', 
+                        x: cx, y: cy, 
+                        rx: dir.x - 2*dot*nx, 
+                        ry: dir.y - 2*dot*ny, 
+                        enemy: other.team !== u.team ? other : null 
+                    };
+                }
+            }
+        }
+        return { type: 'none', x: cx, y: cy };
+    }
+
+    loop() {
+        this.update();
+        this.ctx.clearRect(0,0, CFG.width, CFG.height);
+        
+        if (ASSETS.bg.complete) this.ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
+        else { this.ctx.fillStyle = '#2d5a27'; this.ctx.fillRect(0,0, CFG.width, CFG.height); }
+
+        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        this.units.forEach(u => this.drawUnit(u));
+        requestAnimationFrame(() => this.loop());
+    }
+
+    drawUnit(u) {
+        const ctx = this.ctx;
+        const r = CFG.radius;
+        ctx.save(); ctx.translate(u.x, u.y);
+        if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.6)';
+
+        ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
+
+        if (this.state==='AIMING' && u.team===this.currentTeam && !u.isDead) {
+            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2);
+            ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
+        }
+
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
+        const img = ASSETS[u.imgKey];
+        if (img && img.complete) {
+            const sSize = Math.min(img.width, img.height);
+            const sx = (img.width - sSize) / 2;
+            const sy = (img.height - sSize) / 2;
+            ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
+        } else {
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
+            ctx.fillStyle='#fff'; ctx.font='30px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(u.emoji, 0,0);
+        }
+        ctx.restore();
+
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
+        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
+
+        if(!u.isDead) {
+            const pct = u.hp/u.maxHp;
+            ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
+            ctx.fillStyle= u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
+        }
+        ctx.restore();
+    }
+
+    drawAim() {
+        const u = this.units[this.drag.unitId];
+        const vec = V.sub(this.drag.start, this.drag.curr);
+        
+        // Предсказываем столкновение
+        const hit = this.predictHit(u, vec);
+
+        // 1. ЛИНИЯ
+        const dir = V.norm(vec);
+        const startX = u.x + dir.x * CFG.radius;
+        const startY = u.y + dir.y * CFG.radius;
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(startX, startY);
+        this.ctx.lineTo(hit.x, hit.y);
+        this.ctx.lineWidth = 6;
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        this.ctx.setLineDash([15,10]);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+
+        // 2. ОТСКОК (Короткий)
+        if(hit.type !== 'none' && hit.rx) {
+            this.ctx.beginPath();
+            this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2);
+            this.ctx.fillStyle = '#fff';
+            this.ctx.fill();
+
+            const bounceLen = 50;
+            this.ctx.beginPath();
+            this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            this.ctx.stroke();
+        }
+
+        // 3. УРОН
+        if(hit.enemy) {
+            const en = hit.enemy;
+            this.ctx.save();
+            this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555';
+            this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(`-${CFG.baseDmg}`, 0, -2);
+            this.ctx.restore();
+        }
+    }
+
+    updateBanner(txt, type) {
+        const el = document.getElementById('turn-display');
+        el.innerText = txt;
+        el.className = `turn-badge ${type}`;
+    }
+
+    updateUI() {
+        const render = (id, list) => {
+            const div = document.getElementById(id);
+            div.innerHTML='';
+            list.forEach(u => {
+                const d = document.createElement('div');
+                d.className = `hero-icon ${u.isDead?'dead':''}`;
+                const img = ASSETS[u.imgKey];
+                if(img && img.complete) d.style.backgroundImage = `url(${img.src})`;
+                div.appendChild(d);
+            });
+        };
+        render('panel-green', this.units.filter(u=>u.team==='green'));
+        render('panel-red', this.units.filter(u=>u.team==='red'));
+    }
+
+    floatText(x, y, txt, col) {
+        const wrapper = document.getElementById('game-container');
+        const pctX = (x / CFG.width) * 100;
+        const pctY = (y / CFG.height) * 100;
+        const el = document.createElement('div');
+        el.className='floater'; 
+        el.style.left = pctX + '%'; 
+        el.style.top = pctY + '%';
+        el.style.color = col; 
+        el.innerText = txt;
+        wrapper.appendChild(el);
+        setTimeout(()=>el.remove(), 1200);
+    }
+}
+
+window.onload = () => new Game();
+</script>
+</body>
+</html>
