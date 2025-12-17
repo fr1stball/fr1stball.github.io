@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ForestFight: Лобби</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700;900&display=swap');
+        
+        body {
+            margin: 0; padding: 0;
+            background: url('img/menu_bg.png') no-repeat center center fixed;
+            background-size: cover;
+            height: 100vh; width: 100vw;
+            overflow: hidden;
+            position: relative;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: flex-start;
+            font-family: 'Rubik', sans-serif;
+            user-select: none;
+        }
+
+        /* Контейнер кнопок (подгоните top под вашу картинку) */
+        .buttons-container {
+            position: absolute;
+            top: 53%; 
+            left: 0; width: 100%;
+            display: flex; justify-content: center; gap: 25px;
+            transition: opacity 0.5s;
+        }
+
+        /* Прозрачная кнопка */
+        .ghost-btn {
+            display: block;
+            width: 230px; height: 70px;
+            color: transparent; background: transparent;
+            text-decoration: none; cursor: pointer;
+            border-radius: 15px;
+        }
+
+        .ghost-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+        }
+
+        .ghost-btn.disabled { cursor: default; }
+        .ghost-btn.disabled:hover { background: transparent; box-shadow: none; }
+
+        /* Слой с видео */
+        #transition-layer {
+            display: none; position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: black; z-index: 9999;
+        }
+
+        #transition-video {
+            width: 100%; height: 100%; object-fit: cover;
+            /* HDR фильтр */
+            filter: contrast(1.25) saturate(1.4) brightness(1.1);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="buttons-container" id="btn-container">
+        <!-- Нажатие запускает переход -->
+        <div class="ghost-btn" onclick="Menu.playTransition()">Быстрая игра</div>
+        <div class="ghost-btn" onclick="Menu.playTransition()">Ранговый матч</div>
+        <div class="ghost-btn disabled">2 на 2</div>
+    </div>
+
+    <div id="transition-layer">
+        <video id="transition-video" src="img/transition.mp4" playsinline muted></video>
+    </div>
+
+<script>
+const Menu = {
+    playTransition() {
+        const btns = document.getElementById('btn-container');
+        const layer = document.getElementById('transition-layer');
+        const video = document.getElementById('transition-video');
+
+        btns.style.opacity = '0';
+        
+        setTimeout(() => {
+            btns.style.display = 'none';
+            layer.style.display = 'block';
+            
+            video.currentTime = 0;
+            video.play().catch(error => {
+                console.log("Ошибка:", error);
+                this.goToIndex();
+            });
+
+            video.onended = () => {
+                this.goToIndex();
+            };
+        }, 300);
+    },
+
+    goToIndex() {
+        // Генерируем имя пользователя здесь и передаем дальше
+        const username = "Player_" + Math.floor(Math.random() * 9999);
+        window.location.href = `index.html?username=${username}`;
+    }
+};
+</script>
+
+</body>
+</html>
