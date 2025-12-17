@@ -1,77 +1,50 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require("socket.io");
-const cors = require('cors');
+<!-- Внутри <body> -->
+    <div class="buttons-container" id="btn-container">
+        <!-- Исправлено: теперь ведет в lobby.html, но через функцию -->
+        <div class="ghost-btn" onclick="Menu.playTransition()">Быстрая игра</div>
+        <div class="ghost-btn" onclick="Menu.playTransition()">Ранговый матч</div>
+        <div class="ghost-btn disabled">2 на 2</div>
+    </div>
 
-const app = express();
-app.use(cors());
+<!-- ... остальной HTML (видео и т.д.) ... -->
 
-// Простой ответ для проверки работы
-app.get('/', (req, res) => res.send('ForestFight Server OK'));
+<script>
+const Menu = {
+    playTransition() {
+        const btns = document.getElementById('btn-container');
+        const layer = document.getElementById('transition-layer');
+        const video = document.getElementById('transition-video');
 
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    pingTimeout: 60000, // Увеличиваем таймаут, чтобы не отключало при лагах
-});
+        // Генерируем имя
+        const username = "Player_" + Math.floor(Math.random() * 9999);
+        // ИСПРАВЛЕНО: Переход на lobby.html
+        const targetUrl = `lobby.html?username=${username}`;
 
-let matchmakingQueue = [];
+        const go = () => window.location.href = targetUrl;
+        const fallbackTimer = setTimeout(go, 4000);
 
-io.on('connection', (socket) => {
-    console.log(`[CONNECT] ${socket.id}`);
+        btns.style.opacity = '0';
+        
+        setTimeout(() => {
+            btns.style.display = 'none';
+            layer.style.display = 'block';
+            
+            video.currentTime = 0;
+            const playPromise = video.play();
 
-    // Автоматическая инициализация userData, чтобы не было ошибок
-    socket.userData = { username: "Unknown", rating: 1000 };
+            if (playPromise !== undefined) {
+                playPromise.then(() => {}).catch(error => {
+                    console.log("Автозапуск не сработал:", error);
+                    clearTimeout(fallbackTimer);
+                    go();
+                });
+            }
 
-    socket.on('login', (username) => {
-        socket.userData.username = username || "Player";
-        console.log(`[LOGIN] ${socket.id} -> ${socket.userData.username}`);
-        socket.emit('loginSuccess', socket.userData);
-    });
-
-    socket.on('findMatch', () => {
-        // Проверка: если уже в очереди, не добавляем
-        if (matchmakingQueue.find(s => s.id === socket.id)) return;
-
-        matchmakingQueue.push(socket);
-        console.log(`[QUEUE] Добавлен ${socket.userData.username}. Всего: ${matchmakingQueue.length}`);
-
-        // Пытаемся создать матч
-        tryMatchmaking();
-    });
-
-    socket.on('shoot', (data) => {
-        socket.to(data.room).emit('enemyShoot', data);
-    });
-
-    socket.on('disconnect', () => {
-        console.log(`[DISCONNECT] ${socket.id}`);
-        matchmakingQueue = matchmakingQueue.filter(s => s.id !== socket.id);
-    });
-});
-
-function tryMatchmaking() {
-    if (matchmakingQueue.length >= 2) {
-        const p1 = matchmakingQueue.shift();
-        const p2 = matchmakingQueue.shift();
-
-        // Проверяем соединение
-        if (!p1.connected || !p2.connected) {
-            if (p1.connected) matchmakingQueue.unshift(p1);
-            if (p2.connected) matchmakingQueue.unshift(p2);
-            return;
-        }
-
-        const roomName = `room_${p1.id}_${p2.id}`;
-        p1.join(roomName);
-        p2.join(roomName);
-
-        console.log(`[MATCH START] ${p1.userData.username} vs ${p2.userData.username}`);
-
-        io.to(p1.id).emit('gameStart', { room: roomName, role: 'green', opponent: p2.userData.username });
-        io.to(p2.id).emit('gameStart', { room: roomName, role: 'red', opponent: p1.userData.username });
+            video.onended = () => {
+                clearTimeout(fallbackTimer);
+                go();
+            };
+        }, 300);
     }
-}
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+};
+</script>
