@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Лесная Битва: Выбор</title>
+    <title>Лесная Битва: Выбор отряда</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;700;900&display=swap');
         
@@ -83,6 +83,13 @@
         .start-btn:hover { transform: scale(1.05); background: linear-gradient(to bottom, #2ecc71, #2ecc71); }
         .start-btn:active { transform: scale(0.95) translateY(6px); box-shadow: 0 0 0 #1e8449; }
 
+        /* Подсказка */
+        .status-hint {
+            margin-top: 25px; font-size: 24px; color: #aaa;
+            font-weight: bold; text-shadow: 1px 1px 2px #000;
+            background: rgba(0,0,0,0.5); padding: 10px 30px; border-radius: 20px;
+        }
+
         .roster { margin-top: 30px; display: flex; gap: 15px; background: rgba(0,0,0,0.6); padding: 10px 20px; border-radius: 20px; border: 1px solid #555; }
         .roster-item { width: 70px; height: 70px; background: #444; border-radius: 12px; border: 3px solid #777; cursor: pointer; transition: 0.2s; background-size: cover; background-position: center; box-shadow: 0 4px 8px rgba(0,0,0,0.5); }
         .roster-item:hover { transform: scale(1.15) translateY(-5px); border-color: #fff; }
@@ -94,8 +101,8 @@
 <body>
 
     <div class="main-container">
-        
-        <a href="menu.html" class="lobby-btn">⬅ В Лобби</a>
+        <!-- Кнопка возврата в меню (index.html) -->
+        <a href="index.html" class="lobby-btn">⬅ В Меню</a>
 
         <div class="slots-area">
             <div class="slot-wrapper">
@@ -132,7 +139,8 @@
             </div>
         </div>
 
-        <button id="start-game" class="start-btn" onclick="Menu.start()">В БОЙ!</button>
+        <button id="start-game" class="start-btn" onclick="Menu.start()">В БОЙ! (Поиск)</button>
+        <div id="status-hint" class="status-hint">Выберите 2 героев</div>
 
         <div id="roster" class="roster"></div>
     </div>
@@ -152,7 +160,6 @@ const Menu = {
     selectedHero: null, slot1: null, slot2: null, username: null,
 
     init() {
-        // Получаем никнейм из URL
         const urlParams = new URLSearchParams(window.location.search);
         this.username = urlParams.get('username') || "Player";
 
@@ -238,12 +245,20 @@ const Menu = {
 
     checkStart() {
         const btn = document.getElementById('start-game');
-        btn.style.display = (this.slot1 && this.slot2) ? 'block' : 'none';
+        const hint = document.getElementById('status-hint');
+        
+        if (this.slot1 && this.slot2) {
+            btn.style.display = 'block';
+            hint.style.display = 'none';
+        } else {
+            btn.style.display = 'none';
+            hint.style.display = 'block';
+        }
     },
 
     start() {
         if (this.slot1 && this.slot2) {
-            // Передаем также username
+            // Переход на игру с параметрами
             window.location.href = `game.html?p1=${this.slot1}&p2=${this.slot2}&username=${this.username}`;
         }
     }
