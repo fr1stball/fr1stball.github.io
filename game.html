@@ -69,6 +69,7 @@
         }
         @keyframes floatUp { to { transform: translateY(-60px); opacity: 0; } }
         
+        /* Кнопка теперь вызывает disconnect() через ссылку, но это обрабатывает сервер */
         .back-btn {
             position: absolute; top: 20px; left: 20px;
             pointer-events: auto; padding: 10px 20px;
@@ -92,7 +93,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
+        <a href="lobby.html" class="back-btn">⬅ Выход</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -246,8 +247,6 @@ class Game {
             log("Login OK");
             document.getElementById('debug-log').style.display = 'none';
             this.updateBanner("Поиск соперника...", "grey");
-            
-            // --- ОТПРАВЛЯЕМ СВОИХ ГЕРОЕВ СЕРВЕРУ ---
             socket.emit('findMatch', { p1: p1Key, p2: p2Key });
         });
 
@@ -255,12 +254,8 @@ class Game {
             log("Match Found!");
             this.roomName = data.room;
             this.myTeam = data.role;
-            
-            // Получаем вражеских героев от сервера
             const enemyHeroes = data.enemyHeroes || { p1: 'poacher', p2: 'wolf' };
-            
             this.initUnitsWithSync(this.roomName, enemyHeroes); 
-
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             this.canControl = true; 
             setTimeout(() => { this.startTurnLogic(); }, 2000);
@@ -270,25 +265,28 @@ class Game {
             this.shoot(data.unitId, data.vector, true);
         });
 
-        // --- ИСПРАВЛЕННАЯ СИНХРОНИЗАЦИЯ (ТОЛЬКО ФИЗИКА) ---
         socket.on('syncData', (serverUnits) => {
             this.units.forEach((u, i) => {
                 if (serverUnits[i]) {
-                    // Обновляем только координаты и жизнь
                     u.x = serverUnits[i].x;
                     u.y = serverUnits[i].y;
                     u.hp = serverUnits[i].hp;
                     u.isDead = serverUnits[i].isDead;
                     u.reviveCount = serverUnits[i].reviveCount;
-                    // Сбрасываем скорость
                     u.vx = 0; u.vy = 0; 
                 }
             });
             this.isSimulating = false;
-            this.stopTimer(); // Синхронизируем таймер
+            this.stopTimer();
             this.nextTurnIndex();
         });
         
+        // --- НОВОЕ: ОБРАБОТКА ВЫХОДА СОПЕРНИКА ---
+        socket.on('opponentLeft', () => {
+            alert("Соперник покинул игру!");
+            window.location.href = 'lobby.html';
+        });
+
         socket.on('disconnect', () => {
             log("Disconnected!");
             this.isLoggedIn = false;
@@ -307,41 +305,24 @@ class Game {
         const map = patterns[mapIndex];
         this.units = [];
         
-        // --- ТЕПЕРЬ ГЕРОИ ЗАВИСЯТ ОТ РОЛИ ---
-        // Если я Green: Мои p1/p2 зеленые, Вражеские красные
-        // Если я Red: Мои p1/p2 красные, Вражеские зеленые
-        
-        // Но для простоты: "Зеленые" всегда слева в коде, "Красные" справа.
-        // Сервер сказал мне, что я 'green' -> значит мои герои это p1Key/p2Key
-        // Если я 'red' -> мои герои это p1Key/p2Key, но в массиве units они должны встать на места Red (2 и 3)
-        
-        // Проблема: У нас одна карта для всех.
-        // Решение: 
-        // ID 0 и 1 всегда 'green' (Team A)
-        // ID 2 и 3 всегда 'red' (Team B)
-        
         let greenP1, greenP2, redP1, redP2;
 
         if (this.myTeam === 'green') {
-            // Я зеленый. Значит 0 и 1 - это мои. 2 и 3 - враги (enemyHeroes)
             greenP1 = p1Key;
             greenP2 = p2Key;
             redP1 = enemyHeroes.p1;
             redP2 = enemyHeroes.p2;
         } else {
-            // Я красный. Значит 0 и 1 - это враги. 2 и 3 - мои.
             greenP1 = enemyHeroes.p1;
             greenP2 = enemyHeroes.p2;
             redP1 = p1Key;
             redP2 = p2Key;
         }
 
-        // Спавним всех
         this.spawnUnit('green', greenP1, spots[map[0]].x, spots[map[0]].y);
         this.spawnUnit('green', greenP2, spots[map[1]].x, spots[map[1]].y);
         this.spawnUnit('red', redP1, spots[map[2]].x, spots[map[2]].y);
         this.spawnUnit('red', redP2, spots[map[3]].x, spots[map[3]].y);
-        
         this.updateUI();
     }
 
@@ -395,7 +376,6 @@ class Game {
             if (this.turnTime <= 0) {
                 this.stopTimer();
                 const activeUnit = this.getActiveUnit();
-                // Только хозяин хода запускает рандом
                 if (this.isOnline && activeUnit.team === this.myTeam) {
                     this.forceRandomTurn();
                 }
@@ -448,19 +428,15 @@ class Game {
 
     shoot(id, rawVec, isNetwork = false) {
         this.stopTimer();
-        
-        // Если это мой выстрел
         if (!isNetwork && this.isOnline) {
             socket.emit('shoot', { room: this.roomName, unitId: id, vector: rawVec });
         }
-
         const u = this.units[id];
         const dir = V.norm(rawVec);
         u.vx = dir.x * CFG.launchSpeed;
         u.vy = dir.y * CFG.launchSpeed;
-        
         this.state = 'MOVING';
-        this.isSimulating = true; // Начало симуляции
+        this.isSimulating = true; 
         this.updateBanner('Движение...', 'grey');
     }
 
@@ -480,22 +456,13 @@ class Game {
                 u.vx *= CFG.friction; u.vy *= CFG.friction;
                 if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; else { u.vx = 0; u.vy = 0; }
             });
-
-            // --- ИЗМЕНЕННАЯ ЛОГИКА ОКОНЧАНИЯ ХОДА ---
             if (!active && this.isSimulating) {
-                // Движение закончилось.
                 const activeUnit = this.getActiveUnit();
-                
-                // Если я - активный игрок (стрелявший), я отправляю свои данные как эталон
                 if (this.isOnline && activeUnit.team === this.myTeam) {
-                    socket.emit('syncTurn', {
-                        room: this.roomName,
-                        units: this.units // Отправляем состояние всех юнитов
-                    });
+                    socket.emit('syncTurn', { room: this.roomName, units: this.units });
                     this.isSimulating = false;
                     this.nextTurnIndex();
-                } 
-                // Пассивный игрок ничего не делает, он ждет syncData
+                }
             }
         }
     }
@@ -574,9 +541,7 @@ class Game {
             ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
             ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
             ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
-            ctx.beginPath();
-            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
-            ctx.stroke();
+            ctx.beginPath(); this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); }); ctx.stroke();
         }
     }
 
