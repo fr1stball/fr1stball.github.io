@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
-    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO (Связь с сервером) -->
+    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -84,7 +84,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="menu.html" class="back-btn">⬅ В Лобби</a>
+        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -130,8 +130,14 @@ ASSETS.poacher.src = 'img/poacher.png';
 // --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
+const p1Param = urlParams.get('p1');
+const p2Param = urlParams.get('p2');
 
-// !!! ЗДЕСЬ ВАША ССЫЛКА НА RENDER !!!
+// --- ЗАЩИТА ОТ ПРЯМОГО ЗАХОДА ---
+if (!p1Param || !p2Param) {
+    window.location.href = 'lobby.html';
+}
+
 const socket = io("https://forest-fight-server.onrender.com"); 
 
 const V = {
@@ -163,10 +169,9 @@ class Game {
         this.p1Key = p1Key;
         this.p2Key = p2Key;
 
-        // ОНЛАЙН ПЕРЕМЕННЫЕ
         this.isOnline = true;
         this.roomName = null;
-        this.myTeam = null; // 'green' или 'red'
+        this.myTeam = null; 
         this.canControl = false; 
 
         this.fitScreen();
@@ -175,32 +180,27 @@ class Game {
         this.initArena();
         this.bindInput();
         
-        this.setupNetwork(); // Настраиваем сокеты
+        this.setupNetwork(); 
         this.loop();
     }
 
     setupNetwork() {
-        // 1. Логин
         socket.emit('login', myUsername);
 
-        // 2. Поиск
         socket.on('loginSuccess', (userData) => {
             console.log("Logged in:", userData.username);
             this.updateBanner("Поиск соперника...", "grey");
             socket.emit('findMatch');
         });
 
-        // 3. Старт игры
         socket.on('gameStart', (data) => {
             this.roomName = data.room;
-            this.myTeam = data.role; // Я зеленый или красный?
+            this.myTeam = data.role;
             
-            // Генерируем спавн на основе имени комнаты (чтобы у обоих был одинаковый)
             this.initUnitsWithSync(this.roomName); 
 
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             
-            // Если я зеленый, я начинаю. (Но управление разблокируется по очереди ходов)
             this.canControl = true; 
             
             setTimeout(() => {
@@ -208,13 +208,11 @@ class Game {
             }, 2000);
         });
 
-        // 4. Враг выстрелил
         socket.on('enemyShoot', (data) => {
-            this.shoot(data.unitId, data.vector, true); // true = сетевой ход
+            this.shoot(data.unitId, data.vector, true);
         });
     }
 
-    // Спавн с синхронизацией
     initUnitsWithSync(seedString) {
         const sx = CFG.wallPadding + CFG.cornerCut + 30;
         const my = CFG.height / 2;
@@ -228,13 +226,9 @@ class Game {
         ];
 
         const patterns = [
-            [0, 2, 1, 3], 
-            [0, 1, 2, 3],
-            [3, 0, 2, 1],
-            [1, 3, 0, 2]
+            [0, 2, 1, 3], [0, 1, 2, 3], [3, 0, 2, 1], [1, 3, 0, 2]
         ];
 
-        // Превращаем строку комнаты в число для выбора паттерна
         let seed = 0;
         for(let i=0; i<seedString.length; i++) seed += seedString.charCodeAt(i);
         const mapIndex = seed % patterns.length;
@@ -242,20 +236,13 @@ class Game {
 
         this.units = [];
         
-        // 0: Green P1
         this.spawnUnit('green', this.p1Key, spots[map[0]].x, spots[map[0]].y);
-        // 1: Green P2
         this.spawnUnit('green', this.p2Key, spots[map[1]].x, spots[map[1]].y);
-        // 2: Red P1
         this.spawnUnit('red', 'poacher', spots[map[2]].x, spots[map[2]].y);
-        // 3: Red P2
         this.spawnUnit('red', 'wolf',    spots[map[3]].x, spots[map[3]].y);
 
         this.updateUI();
     }
-
-    // (Оставим старый метод для совместимости, но не используем)
-    initUnits() {} 
 
     spawnUnit(team, key, x, y) {
         const stats = HERO_STATS[key];
@@ -283,15 +270,12 @@ class Game {
         const scheduledUnitId = this.turnOrder[this.turnStep % 4];
         let scheduledUnit = this.units[scheduledUnitId];
 
-        // Проверяем, жив ли юнит
         if (scheduledUnit.isDead) {
             const ally = this.units.find(u => u.team === scheduledUnit.team && u.id !== scheduledUnitId && !u.isDead);
             if (ally) {
-                // Если друг жив - передаем ход ему
                 this.activeUnitId = ally.id;
                 this.floatText(ally.x, ally.y, "ЗА ДРУГА!", "#f1c40f");
             } else {
-                // Если и друг мертв - пропускаем ход (скорее всего игра уже закончится)
                 this.nextTurnIndex();
                 return;
             }
@@ -329,8 +313,6 @@ class Game {
 
             if (this.turnTime <= 0) {
                 this.stopTimer();
-                
-                // Автоход делает только тот игрок, чья это команда
                 const activeUnit = this.getActiveUnit();
                 if (this.isOnline && activeUnit.team === this.myTeam) {
                     this.forceRandomTurn();
@@ -372,8 +354,6 @@ class Game {
             if (!this.canControl) return;
 
             const activeUnit = this.getActiveUnit();
-            
-            // ОНЛАЙН ПРОВЕРКА: Только моя команда
             if (this.isOnline && activeUnit.team !== this.myTeam) return;
 
             const pos = this.getMousePos(e);
@@ -412,16 +392,9 @@ class Game {
 
     shoot(id, rawVec, isNetwork = false) {
         this.stopTimer();
-
-        // Отправка на сервер
         if (!isNetwork && this.isOnline) {
-            socket.emit('shoot', {
-                room: this.roomName,
-                unitId: id,
-                vector: rawVec
-            });
+            socket.emit('shoot', { room: this.roomName, unitId: id, vector: rawVec });
         }
-
         const u = this.units[id];
         const dir = V.norm(rawVec);
         u.vx = dir.x * CFG.launchSpeed;
@@ -434,28 +407,24 @@ class Game {
         if (this.state === 'MOVING') {
             let active = false;
             const steps = CFG.subSteps;
-            
             for(let s=0; s<steps; s++) {
                 this.units.forEach(u => {
                     u.x += u.vx / steps; 
                     u.y += u.vy / steps;
                     for (let w of this.walls) this.solveWall(u, w);
                 });
-
                 for (let i=0; i<this.units.length; i++) {
                     for (let j=i+1; j<this.units.length; j++) {
                         this.solveCollision(this.units[i], this.units[j]);
                     }
                 }
             }
-
             this.units.forEach(u => {
                 u.vx *= CFG.friction;
                 u.vy *= CFG.friction;
                 if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true;
                 else { u.vx = 0; u.vy = 0; }
             });
-
             if (!active) this.nextTurnIndex();
         }
     }
@@ -469,19 +438,14 @@ class Game {
             const t = ((u.x - w.p1.x)*nx + (u.y - w.p1.y)*ny);
             let cx = w.p1.x + t*nx; let cy = w.p1.y + t*ny; 
             if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
-
             const nxColl = (u.x - cx) / dist; 
             const nyColl = (u.y - cy) / dist;
             u.x += nxColl * (CFG.radius - dist);
             u.y += nyColl * (CFG.radius - dist);
-            
             const dp = u.vx * nxColl + u.vy * nyColl;
             u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
             u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
-
-            if (u.isDead && Math.abs(dp) > 2) {
-                this.heal(u, CFG.reviveAmount);
-            }
+            if (u.isDead && Math.abs(dp) > 2) { this.heal(u, CFG.reviveAmount); }
         }
     }
 
@@ -496,11 +460,9 @@ class Game {
             const rvx = u1.vx - u2.vx; const rvy = u1.vy - u2.vy;
             const velNormal = rvx * nx + rvy * ny;
             if (velNormal < 0) return;
-            
             const impulse = velNormal; 
             u1.vx -= impulse * nx; u1.vy -= impulse * ny;
             u2.vx += impulse * nx; u2.vy += impulse * ny;
-            
             const impact = Math.abs(impulse);
             if (impact > 0.1) {
                 if (u1.team === u2.team) {
@@ -522,15 +484,11 @@ class Game {
     heal(u, amt) {
         if (!u.isDead) return;
         if (u.reviveCount >= CFG.maxRevives) return;
-
         if(!u.lastHeal || Date.now() - u.lastHeal > 200) {
             u.hp += amt;
             this.floatText(u.x, u.y, `+${amt}`, '#3498db');
             u.lastHeal = Date.now();
-        } else {
-            u.hp += amt;
-        }
-
+        } else { u.hp += amt; }
         if (u.hp >= u.maxHp) {
             u.hp = u.maxHp;
             u.isDead = false;
@@ -558,11 +516,9 @@ class Game {
 
     drawBackground() {
         const ctx = this.ctx;
-        // Попытка отрисовки картинки
         if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
             ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
         } else {
-            // Если картинки нет - рисуем процедурный фон
             ctx.fillStyle = '#2d5a27'; ctx.fillRect(0,0, CFG.width, CFG.height);
             ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 10;
             ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
@@ -578,18 +534,13 @@ class Game {
         const ctx = this.ctx;
         const r = CFG.radius;
         ctx.save(); ctx.translate(u.x, u.y);
-        
         if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.5)';
-
         ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
-
         if (this.state==='AIMING' && u.id === this.activeUnitId && !u.isDead) {
             ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2);
             ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
         }
-
         ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
-        
         const img = ASSETS[u.imgKey];
         if (img && img.complete && img.naturalWidth !== 0) {
             const sSize = Math.min(img.width, img.height);
@@ -602,30 +553,21 @@ class Game {
             ctx.fillText(u.emoji, 0, 5); 
         }
         ctx.restore();
-
         ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
         ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
-
         const pct = u.hp/u.maxHp;
         ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
-        
         if (u.isDead) {
             if (u.reviveCount >= CFG.maxRevives) {
-                ctx.fillStyle = '#555'; 
-                ctx.fillRect(-28, r+12, 56, 6); 
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; 
-                ctx.fillText('❌', 0, -r/2);
+                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); 
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
             } else {
-                ctx.fillStyle = '#3498db'; 
-                ctx.fillRect(-28, r+12, 56*pct, 6);
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; 
-                ctx.fillText('💀', 0, -r/2);
+                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6);
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
             }
         } else {
-            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c';
-            ctx.fillRect(-28, r+12, 56*pct, 6);
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
         }
-
         ctx.restore();
     }
     
@@ -642,11 +584,7 @@ class Game {
     }
 
     predictHit(u, vec) {
-        const maxDist = 2500; 
-        const dir = V.norm(vec);
-        let cx = u.x; let cy = u.y;
-        const step = 10;
-        
+        const maxDist = 2500; const dir = V.norm(vec); let cx = u.x; let cy = u.y; const step = 10;
         for(let d=0; d<maxDist; d+=step) {
             cx += dir.x * step; cy += dir.y * step;
             for(let w of this.walls) {
@@ -683,41 +621,26 @@ class Game {
         const startX = u.x + dir.x * CFG.radius;
         const startY = u.y + dir.y * CFG.radius;
 
-        this.ctx.beginPath();
-        this.ctx.moveTo(startX, startY);
-        this.ctx.lineTo(hit.x, hit.y);
-        this.ctx.lineWidth = 6;
-        this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        this.ctx.setLineDash([15,10]);
-        this.ctx.stroke();
-        this.ctx.setLineDash([]);
+        this.ctx.beginPath(); this.ctx.moveTo(startX, startY); this.ctx.lineTo(hit.x, hit.y);
+        this.ctx.lineWidth = 6; this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
 
         if(hit.type !== 'none' && hit.rx) {
-            this.ctx.beginPath();
-            this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2);
-            this.ctx.fillStyle = '#fff';
-            this.ctx.fill();
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2);
+            this.ctx.fillStyle = '#fff'; this.ctx.fill();
             const bounceLen = 50;
-            this.ctx.beginPath();
-            this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-            this.ctx.stroke();
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; this.ctx.stroke();
         }
 
         if(hit.enemy) {
             const en = hit.enemy;
-            this.ctx.save();
-            this.ctx.translate(en.x, en.y - 65);
-            this.ctx.fillStyle = 'rgba(0,0,0,0.8)';
-            this.ctx.fillRect(-40, -30, 80, 40);
-            this.ctx.strokeStyle = 'white';
-            this.ctx.lineWidth = 2;
-            this.ctx.strokeRect(-40, -30, 80, 40);
-            this.ctx.fillStyle = '#ff5555';
-            this.ctx.font = 'bold 24px Arial';
-            this.ctx.textAlign = 'center';
-            this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
     }
@@ -735,15 +658,13 @@ class Game {
             list.forEach(u => {
                 const d = document.createElement('div');
                 d.className = `hero-icon ${u.isDead?'dead':''}`;
+                if (u.id === this.activeUnitId) d.classList.add('active');
                 
                 const img = ASSETS[u.imgKey];
                 if(img && img.complete && img.naturalWidth !== 0) {
-                     d.style.backgroundImage = `url(${img.src})`;
-                     d.innerText = '';
+                     d.style.backgroundImage = `url(${img.src})`; d.innerText = '';
                 } else {
-                     d.innerText = u.emoji;
-                     d.style.color = '#fff';
-                     d.style.display = 'flex';
+                     d.innerText = u.emoji; d.style.color = '#fff'; d.style.display = 'flex';
                 }
                 div.appendChild(d);
             });
@@ -757,8 +678,7 @@ class Game {
         const pctX = (x / CFG.width) * 100;
         const pctY = (y / CFG.height) * 100;
         const el = document.createElement('div');
-        el.className='floater'; 
-        el.style.left = pctX + '%'; el.style.top = pctY + '%';
+        el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
         el.style.color = col; el.innerText = txt;
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
@@ -768,27 +688,19 @@ class Game {
         this.update();
         this.ctx.clearRect(0,0, CFG.width, CFG.height);
         this.drawBackground();
-
         if (this.state === 'AIMING' && this.drag.active) this.drawAim();
         this.units.forEach(u => this.drawUnit(u));
         requestAnimationFrame(() => this.loop());
     }
 }
 
-// Запуск с чтением HASH
-window.onload = () => {
-    const hash = window.location.hash.substring(1); 
-    const params = new URLSearchParams(hash);
-    const p1 = params.get('p1');
-    const p2 = params.get('p2');
-
-    if(!p1 || !p2) {
-        window.location.href = 'index.html';
-        return;
-    }
-
-    new Game(p1, p2);
-};
+// ЗАПУСК ТОЛЬКО ПОСЛЕ ЗАГРУЗКИ ПАРАМЕТРОВ
+if(p1Param && p2Param) {
+    new Game(p1Param, p2Param);
+} else {
+    // В теории это уже обработано вверху скрипта
+    console.log("Ждем параметров...");
+}
 </script>
 </body>
 </html>
