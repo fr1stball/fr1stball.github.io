@@ -133,12 +133,17 @@ const myUsername = urlParams.get('username') || "Player";
 const p1Param = urlParams.get('p1');
 const p2Param = urlParams.get('p2');
 
-// --- ЗАЩИТА ОТ ПРЯМОГО ЗАХОДА ---
+// Если параметров нет, возвращаем в лобби
 if (!p1Param || !p2Param) {
     window.location.href = 'lobby.html';
 }
 
-const socket = io("https://forest-fight-server.onrender.com"); 
+// ПОДКЛЮЧЕНИЕ К СЕРВЕРУ
+const socket = io("https://forest-fight-server.onrender.com", {
+    reconnection: true,             
+    reconnectionAttempts: 10,       
+    reconnectionDelay: 1000,        
+}); 
 
 const V = {
     add: (a, b) => ({x: a.x + b.x, y: a.y + b.y}),
@@ -180,19 +185,33 @@ class Game {
         this.initArena();
         this.bindInput();
         
-        this.setupNetwork(); 
+        this.setupNetwork(); // Запуск сети
         this.loop();
     }
 
     setupNetwork() {
-        socket.emit('login', myUsername);
+        // !!! ГЛАВНОЕ ИСПРАВЛЕНИЕ: Ждем подключения, потом шлем логин !!!
+        
+        // 1. Если подключились
+        socket.on('connect', () => {
+            console.log("Connected! Logging in...");
+            socket.emit('login', myUsername);
+        });
 
+        // 2. Если вдруг уже были подключены (быстрый реконнект)
+        if (socket.connected) {
+            console.log("Already connected. Logging in...");
+            socket.emit('login', myUsername);
+        }
+
+        // 3. Сервер подтвердил логин -> ищем матч
         socket.on('loginSuccess', (userData) => {
-            console.log("Logged in:", userData.username);
+            console.log("Login success:", userData.username);
             this.updateBanner("Поиск соперника...", "grey");
             socket.emit('findMatch');
         });
 
+        // 4. Матч найден
         socket.on('gameStart', (data) => {
             this.roomName = data.room;
             this.myTeam = data.role;
@@ -208,6 +227,7 @@ class Game {
             }, 2000);
         });
 
+        // 5. Ход врага
         socket.on('enemyShoot', (data) => {
             this.shoot(data.unitId, data.vector, true);
         });
@@ -577,9 +597,7 @@ class Game {
         const nx = dx/lenW; const ny = dy/lenW;
         const t = ((u.x - p1.x)*nx + (u.y - p1.y)*ny);
         let cx, cy;
-        if(t < 0) { cx = p1.x; cy = p1.y; }
-        else if(t > lenW) { cx = p2.x; cy = p2.y; }
-        else { cx = p1.x + t*nx; cy = p1.y + t*ny; }
+        if(t < 0) { cx = p1.x; cy = p1.y; } else if(t > lenW) { cx = p2.x; cy = p2.y; } else { cx = p1.x + t*nx; cy = p1.y + t*ny; }
         return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
     }
 
@@ -591,10 +609,8 @@ class Game {
                 const dist = this.getDistToLine({x:cx,y:cy}, w.p1, w.p2);
                 if(dist < CFG.radius) {
                     const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
-                    const lenW = Math.sqrt(dx*dx + dy*dy);
-                    const nx = dx/lenW; const ny = dy/lenW; 
-                    const wnx = -ny; const wny = nx;
-                    const dot = dir.x*wnx + dir.y*wny;
+                    const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW; 
+                    const wnx = -ny; const wny = nx; const dot = dir.x*wnx + dir.y*wny;
                     return { type: 'wall', x: cx, y: cy, rx: dir.x - 2*dot*wnx, ry: dir.y - 2*dot*wny };
                 }
             }
@@ -603,9 +619,7 @@ class Game {
                 const dist = Math.sqrt((cx - other.x)**2 + (cy - other.y)**2);
                 if(dist < CFG.radius * 2) {
                     let nx = cx - other.x; let ny = cy - other.y;
-                    const ln = Math.sqrt(nx*nx + ny*ny);
-                    nx/=ln; ny/=ln;
-                    const dot = dir.x*nx + dir.y*ny;
+                    const ln = Math.sqrt(nx*nx + ny*ny); nx/=ln; ny/=ln; const dot = dir.x*nx + dir.y*ny;
                     return { type: 'unit', x: cx, y: cy, rx: dir.x - 2*dot*nx, ry: dir.y - 2*dot*ny, enemy: other.team !== u.team ? other : null };
                 }
             }
@@ -617,26 +631,18 @@ class Game {
         const u = this.units[this.drag.unitId];
         const vec = V.sub(this.drag.start, this.drag.curr);
         const hit = this.predictHit(u, vec);
-        const dir = V.norm(vec);
-        const startX = u.x + dir.x * CFG.radius;
-        const startY = u.y + dir.y * CFG.radius;
-
+        const startX = u.x + V.norm(vec).x * CFG.radius; const startY = u.y + V.norm(vec).y * CFG.radius;
         this.ctx.beginPath(); this.ctx.moveTo(startX, startY); this.ctx.lineTo(hit.x, hit.y);
         this.ctx.lineWidth = 6; this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
         this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
-
         if(hit.type !== 'none' && hit.rx) {
-            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2);
-            this.ctx.fillStyle = '#fff'; this.ctx.fill();
-            const bounceLen = 50;
-            this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); this.ctx.fillStyle = '#fff'; this.ctx.fill();
+            const bounceLen = 50; this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
             this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; this.ctx.stroke();
         }
-
         if(hit.enemy) {
-            const en = hit.enemy;
-            this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
+            const en = hit.enemy; this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
             this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
             this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
             this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
@@ -659,7 +665,6 @@ class Game {
                 const d = document.createElement('div');
                 d.className = `hero-icon ${u.isDead?'dead':''}`;
                 if (u.id === this.activeUnitId) d.classList.add('active');
-                
                 const img = ASSETS[u.imgKey];
                 if(img && img.complete && img.naturalWidth !== 0) {
                      d.style.backgroundImage = `url(${img.src})`; d.innerText = '';
@@ -694,12 +699,12 @@ class Game {
     }
 }
 
-// ЗАПУСК ТОЛЬКО ПОСЛЕ ЗАГРУЗКИ ПАРАМЕТРОВ
+// ЗАПУСК
 if(p1Param && p2Param) {
     new Game(p1Param, p2Param);
 } else {
-    // В теории это уже обработано вверху скрипта
-    console.log("Ждем параметров...");
+    // Резервный возврат
+    window.location.href = 'lobby.html';
 }
 </script>
 </body>
