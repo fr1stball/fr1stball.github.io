@@ -146,10 +146,10 @@ ASSETS.poacher.src = 'img/poacher.png';
 
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
-const p1Param = urlParams.get('p1');
-const p2Param = urlParams.get('p2');
+const p1Key = urlParams.get('p1');
+const p2Key = urlParams.get('p2');
 
-if (!p1Param || !p2Param) {
+if (!p1Key || !p2Key) {
     window.location.href = 'lobby.html';
 }
 
@@ -175,32 +175,19 @@ const V = {
 };
 
 class Game {
-    constructor(p1Key, p2Key) {
+    constructor() {
         this.container = document.getElementById('game-container');
         this.canvas = document.getElementById('arena');
         this.ctx = this.canvas.getContext('2d');
         
-        this.units = [];
-        this.walls = [];
+        this.units = []; this.walls = [];
         this.state = 'AIMING'; 
         this.drag = { active: false, start: {x:0,y:0}, curr: {x:0,y:0}, unitId: null };
+        this.turnTime = CFG.turnTimeSeconds; this.timerInterval = null;
+        this.turnOrder = [0, 2, 1, 3]; this.turnStep = 0; this.activeUnitId = 0; 
         
-        this.turnTime = CFG.turnTimeSeconds;
-        this.timerInterval = null;
-        this.turnOrder = [0, 2, 1, 3]; 
-        this.turnStep = 0;
-        this.activeUnitId = 0; 
-
-        this.p1Key = p1Key;
-        this.p2Key = p2Key;
-
-        this.isOnline = true;
-        this.roomName = null;
-        this.myTeam = null; 
-        this.canControl = false; 
-        this.isLoggedIn = false;
-        
-        // Флаг, идет ли симуляция (чтобы не отправить данные дважды)
+        this.isOnline = true; this.roomName = null; this.myTeam = null; 
+        this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
 
         this.fitScreen();
@@ -256,42 +243,49 @@ class Game {
         socket.on('loginSuccess', (userData) => {
             if (this.isLoggedIn) return;
             this.isLoggedIn = true;
-            log("Login OK: " + userData.username);
+            log("Login OK");
             document.getElementById('debug-log').style.display = 'none';
             this.updateBanner("Поиск соперника...", "grey");
-            socket.emit('findMatch');
+            
+            // --- ОТПРАВЛЯЕМ СВОИХ ГЕРОЕВ СЕРВЕРУ ---
+            socket.emit('findMatch', { p1: p1Key, p2: p2Key });
         });
 
         socket.on('gameStart', (data) => {
             log("Match Found!");
             this.roomName = data.room;
             this.myTeam = data.role;
-            this.initUnitsWithSync(this.roomName); 
+            
+            // Получаем вражеских героев от сервера
+            const enemyHeroes = data.enemyHeroes || { p1: 'poacher', p2: 'wolf' };
+            
+            this.initUnitsWithSync(this.roomName, enemyHeroes); 
+
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             this.canControl = true; 
             setTimeout(() => { this.startTurnLogic(); }, 2000);
         });
 
         socket.on('enemyShoot', (data) => {
-            // Враг выстрелил - повторяем у себя
             this.shoot(data.unitId, data.vector, true);
         });
 
-        // --- НОВОЕ: СИНХРОНИЗАЦИЯ ОТ СЕРВЕРА ---
+        // --- ИСПРАВЛЕННАЯ СИНХРОНИЗАЦИЯ (ТОЛЬКО ФИЗИКА) ---
         socket.on('syncData', (serverUnits) => {
-            // Принудительно ставим всех на места, как у того, кто стрелял
             this.units.forEach((u, i) => {
                 if (serverUnits[i]) {
+                    // Обновляем только координаты и жизнь
                     u.x = serverUnits[i].x;
                     u.y = serverUnits[i].y;
                     u.hp = serverUnits[i].hp;
                     u.isDead = serverUnits[i].isDead;
                     u.reviveCount = serverUnits[i].reviveCount;
-                    u.vx = 0; u.vy = 0; // Останавливаем полностью
+                    // Сбрасываем скорость
+                    u.vx = 0; u.vy = 0; 
                 }
             });
-            // Только теперь передаем ход
             this.isSimulating = false;
+            this.stopTimer(); // Синхронизируем таймер
             this.nextTurnIndex();
         });
         
@@ -301,7 +295,7 @@ class Game {
         });
     }
 
-    initUnitsWithSync(seedString) {
+    initUnitsWithSync(seedString, enemyHeroes) {
         const sx = CFG.wallPadding + CFG.cornerCut + 30;
         const my = CFG.height / 2;
         const spr = 130;
@@ -312,17 +306,50 @@ class Game {
         const mapIndex = seed % patterns.length;
         const map = patterns[mapIndex];
         this.units = [];
-        this.spawnUnit('green', this.p1Key, spots[map[0]].x, spots[map[0]].y);
-        this.spawnUnit('green', this.p2Key, spots[map[1]].x, spots[map[1]].y);
-        this.spawnUnit('red', 'poacher', spots[map[2]].x, spots[map[2]].y);
-        this.spawnUnit('red', 'wolf',    spots[map[3]].x, spots[map[3]].y);
+        
+        // --- ТЕПЕРЬ ГЕРОИ ЗАВИСЯТ ОТ РОЛИ ---
+        // Если я Green: Мои p1/p2 зеленые, Вражеские красные
+        // Если я Red: Мои p1/p2 красные, Вражеские зеленые
+        
+        // Но для простоты: "Зеленые" всегда слева в коде, "Красные" справа.
+        // Сервер сказал мне, что я 'green' -> значит мои герои это p1Key/p2Key
+        // Если я 'red' -> мои герои это p1Key/p2Key, но в массиве units они должны встать на места Red (2 и 3)
+        
+        // Проблема: У нас одна карта для всех.
+        // Решение: 
+        // ID 0 и 1 всегда 'green' (Team A)
+        // ID 2 и 3 всегда 'red' (Team B)
+        
+        let greenP1, greenP2, redP1, redP2;
+
+        if (this.myTeam === 'green') {
+            // Я зеленый. Значит 0 и 1 - это мои. 2 и 3 - враги (enemyHeroes)
+            greenP1 = p1Key;
+            greenP2 = p2Key;
+            redP1 = enemyHeroes.p1;
+            redP2 = enemyHeroes.p2;
+        } else {
+            // Я красный. Значит 0 и 1 - это враги. 2 и 3 - мои.
+            greenP1 = enemyHeroes.p1;
+            greenP2 = enemyHeroes.p2;
+            redP1 = p1Key;
+            redP2 = p2Key;
+        }
+
+        // Спавним всех
+        this.spawnUnit('green', greenP1, spots[map[0]].x, spots[map[0]].y);
+        this.spawnUnit('green', greenP2, spots[map[1]].x, spots[map[1]].y);
+        this.spawnUnit('red', redP1, spots[map[2]].x, spots[map[2]].y);
+        this.spawnUnit('red', redP2, spots[map[3]].x, spots[map[3]].y);
+        
         this.updateUI();
     }
 
     spawnUnit(team, key, x, y) {
-        const stats = HERO_STATS[key];
-        const safeStats = stats || HERO_STATS['ranger'];
-        const safeKey = stats ? key : 'ranger';
+        const stats = HERO_STATS[key] || HERO_STATS['ranger'];
+        const safeStats = stats;
+        const safeKey = key;
+        
         this.units.push({
             id: this.units.length, team: team, name: safeStats.name, imgKey: safeKey, emoji: safeStats.emoji,
             x: x, y: y, vx: 0, vy: 0, hp: safeStats.hp, maxHp: safeStats.hp, dmg: safeStats.dmg,
@@ -467,10 +494,8 @@ class Game {
                     });
                     this.isSimulating = false;
                     this.nextTurnIndex();
-                } else {
-                    // Если я пассивный игрок - я ЖДУ данных от сервера и сам ход не переключаю!
-                    // Переключение произойдет в socket.on('syncData')
-                }
+                } 
+                // Пассивный игрок ничего не делает, он ждет syncData
             }
         }
     }
@@ -549,7 +574,9 @@ class Game {
             ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
             ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
             ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
-            ctx.beginPath(); this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); }); ctx.stroke();
+            ctx.beginPath();
+            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
+            ctx.stroke();
         }
     }
 
@@ -692,12 +719,7 @@ class Game {
     }
 }
 
-// ЗАПУСК
-if(p1Param && p2Param) {
-    new Game(p1Param, p2Param);
-} else {
-    window.location.href = 'lobby.html';
-}
+new Game(p1Key, p2Key);
 </script>
 </body>
 </html>
