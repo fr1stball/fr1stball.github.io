@@ -78,14 +78,14 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
-        /* ОТЛАДОЧНАЯ КОНСОЛЬ НА ЭКРАНЕ (ЕСЛИ ЧТО-ТО ПОЙДЕТ НЕ ТАК) */
+        /* ОТЛАДОЧНАЯ КОНСОЛЬ НА ЭКРАНЕ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
             background: rgba(0,0,0,0.5); color: #0f0; 
             font-family: monospace; font-size: 12px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; /* Скрыта по умолчанию, включится при ошибке */
+            display: none; 
             z-index: 9999;
         }
     </style>
@@ -104,7 +104,6 @@
             <div id="panel-red" style="display:flex; gap:10px;"></div>
         </div>
         
-        <!-- Отладочный лог -->
         <div id="debug-log"></div>
     </div>
 </div>
@@ -115,7 +114,7 @@ function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
     if(box) {
-        box.style.display = 'block'; // Показываем при сообщениях
+        box.style.display = 'block';
         box.innerHTML += `> ${msg}<br>`;
         box.scrollTop = box.scrollHeight;
     }
@@ -165,7 +164,6 @@ if (!p1Param || !p2Param) {
     window.location.href = 'lobby.html';
 }
 
-// !!! ВАЖНО: АДРЕС СЕРВЕРА !!!
 const SOCKET_URL = "https://forest-fight-server.onrender.com";
 let socket;
 
@@ -213,16 +211,42 @@ class Game {
         this.canControl = false; 
         this.isLoggedIn = false;
 
+        // !!! ВОТ ПРОПУЩЕННЫЕ МЕТОДЫ !!!
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
 
         this.initArena();
         this.bindInput();
         
-        // Запускаем сеть сразу
         this.setupNetwork(); 
         
         this.loop();
+    }
+
+    // --- ВОССТАНОВЛЕННЫЙ МЕТОД ---
+    fitScreen() {
+        const aspect = 16 / 9;
+        let w = window.innerWidth;
+        let h = window.innerHeight;
+        if (w / h > aspect) w = h * aspect;
+        else h = w / aspect;
+        this.container.style.width = w + 'px';
+        this.container.style.height = h + 'px';
+        this.canvas.width = CFG.width;
+        this.canvas.height = CFG.height;
+    }
+
+    // --- ВОССТАНОВЛЕННЫЙ МЕТОД ---
+    getMousePos(evt) {
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+        const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+        return {
+            x: (clientX - rect.left) * scaleX,
+            y: (clientY - rect.top) * scaleY
+        };
     }
 
     setupNetwork() {
@@ -231,39 +255,32 @@ class Game {
             return;
         }
 
-        // Функция отправки логина
         const tryLogin = () => {
             if (!this.isLoggedIn && socket.connected) {
-                // log("Отправка Login...");
                 socket.emit('login', myUsername);
             }
         };
 
-        // 1. При подключении
         socket.on('connect', () => {
             log("Connected to server!");
             tryLogin();
         });
 
-        // 2. Если уже подключен (быстрый старт)
         if (socket.connected) {
             log("Already connected!");
             tryLogin();
         }
 
-        // 3. Цикличная проверка (на всякий случай)
         const checkInt = setInterval(() => {
             if (this.isLoggedIn) clearInterval(checkInt);
             else tryLogin();
         }, 1000);
 
-        // 4. Успешный вход
         socket.on('loginSuccess', (userData) => {
             if (this.isLoggedIn) return;
             this.isLoggedIn = true;
             log("Login OK: " + userData.username);
             
-            // Прячем лог, если все ок
             document.getElementById('debug-log').style.display = 'none';
             
             this.updateBanner("Поиск соперника...", "grey");
@@ -741,8 +758,7 @@ class Game {
     floatText(x, y, txt, col) {
         const wrapper = document.getElementById('game-container');
         const pctX = (x / CFG.width) * 100; const pctY = (y / CFG.height) * 100;
-        const el = document.createElement('div');
-        el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
+        const el = document.createElement('div'); el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
         el.style.color = col; el.innerText = txt;
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
@@ -762,7 +778,6 @@ class Game {
 if(p1Param && p2Param) {
     new Game(p1Param, p2Param);
 } else {
-    // Резервный возврат
     window.location.href = 'lobby.html';
 }
 </script>
