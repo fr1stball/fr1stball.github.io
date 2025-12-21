@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
+    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -77,13 +78,15 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
+        /* ОТЛАДОЧНАЯ КОНСОЛЬ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
             background: rgba(0,0,0,0.5); color: #0f0; 
             font-family: monospace; font-size: 12px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; z-index: 9999;
+            display: none; 
+            z-index: 9999;
         }
     </style>
 </head>
@@ -92,7 +95,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выход</a>
+        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -106,6 +109,7 @@
 </div>
 
 <script>
+// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -119,6 +123,7 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
+// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -136,14 +141,20 @@ const HERO_STATS = {
 };
 
 const ASSETS = {
-    bg: new Image(), ranger: new Image(), bear: new Image(), wolf: new Image(), poacher: new Image()
+    bg: new Image(),
+    ranger: new Image(),
+    bear: new Image(),
+    wolf: new Image(),
+    poacher: new Image()
 };
-ASSETS.bg.src = 'img/bg.png';
-ASSETS.ranger.src = 'img/ranger.png';
-ASSETS.bear.src = 'img/bear.png';
-ASSETS.wolf.src = 'img/wolf.png';
+
+ASSETS.bg.src      = 'img/bg.png';
+ASSETS.ranger.src  = 'img/ranger.png';
+ASSETS.bear.src    = 'img/bear.png';
+ASSETS.wolf.src    = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
+// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Key = urlParams.get('p1');
@@ -180,7 +191,8 @@ class Game {
         this.canvas = document.getElementById('arena');
         this.ctx = this.canvas.getContext('2d');
         
-        this.units = []; this.walls = [];
+        this.units = [];
+        this.walls = [];
         this.state = 'AIMING'; 
         this.drag = { active: false, start: {x:0,y:0}, curr: {x:0,y:0}, unitId: null };
         this.turnTime = CFG.turnTimeSeconds; this.timerInterval = null;
@@ -189,11 +201,6 @@ class Game {
         this.isOnline = true; this.roomName = null; this.myTeam = null; 
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
-
-        // ПЕРЕМЕННЫЕ ДЛЯ ФИЗИКИ (Fixed Time Step)
-        this.lastTime = performance.now();
-        this.accumulator = 0;
-        this.step = 1 / 60; // 60 FPS физика (0.01666 сек)
 
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
@@ -251,6 +258,8 @@ class Game {
             log("Login OK");
             document.getElementById('debug-log').style.display = 'none';
             this.updateBanner("Поиск соперника...", "grey");
+            
+            // --- ОТПРАВЛЯЕМ СВОИХ ГЕРОЕВ СЕРВЕРУ ---
             socket.emit('findMatch', { p1: p1Key, p2: p2Key });
         });
 
@@ -258,8 +267,12 @@ class Game {
             log("Match Found!");
             this.roomName = data.room;
             this.myTeam = data.role;
+            
+            // Получаем вражеских героев от сервера
             const enemyHeroes = data.enemyHeroes || { p1: 'poacher', p2: 'wolf' };
+            
             this.initUnitsWithSync(this.roomName, enemyHeroes); 
+
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             this.canControl = true; 
             setTimeout(() => { this.startTurnLogic(); }, 2000);
@@ -369,45 +382,26 @@ class Game {
         this.startTurnLogic();
     }
 
-    // --- ИСПРАВЛЕННЫЙ ТАЙМЕР ---
-    // Теперь использует реальное время (Date.now), чтобы не отставать при сворачивании
     startTimer() {
         this.stopTimer();
-        const endTime = Date.now() + CFG.turnTimeSeconds * 1000;
-        
-        // Сразу обновляем UI
-        this.updateTimerUI(CFG.turnTimeSeconds);
-
+        this.turnTime = CFG.turnTimeSeconds;
+        this.updateTimerUI();
         this.timerInterval = setInterval(() => {
-            const now = Date.now();
-            const left = Math.ceil((endTime - now) / 1000);
-            
-            // Если время вышло
-            if (left <= 0) {
+            this.turnTime--;
+            this.updateTimerUI();
+            if (this.turnTime <= 0) {
                 this.stopTimer();
-                this.updateTimerUI(0);
-                
                 const activeUnit = this.getActiveUnit();
-                // Автоход делает только тот, чей это юнит
+                // Только хозяин хода запускает рандом
                 if (this.isOnline && activeUnit.team === this.myTeam) {
                     this.forceRandomTurn();
                 }
-            } else {
-                this.updateTimerUI(left);
             }
-        }, 200); // Проверяем 5 раз в секунду для плавности
+        }, 1000);
     }
 
-    stopTimer() { 
-        if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } 
-        document.getElementById('timer-display').className = ''; 
-    }
-    
-    updateTimerUI(seconds) { 
-        const el = document.getElementById('timer-display'); 
-        el.innerText = seconds; 
-        if (seconds <= 10) el.classList.add('low'); else el.classList.remove('low'); 
-    }
+    stopTimer() { if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } document.getElementById('timer-display').className = ''; }
+    updateTimerUI() { const el = document.getElementById('timer-display'); el.innerText = this.turnTime; if (this.turnTime <= 10) el.classList.add('low'); else el.classList.remove('low'); }
 
     forceRandomTurn() {
         const unit = this.getActiveUnit();
@@ -463,60 +457,22 @@ class Game {
         this.updateBanner('Движение...', 'grey');
     }
 
-    // --- ИСПРАВЛЕННЫЙ ИГРОВОЙ ЦИКЛ (FIXED TIME STEP) ---
-    // Это гарантирует, что физика догонит время, даже если вкладка спала
-    loop() {
-        requestAnimationFrame(() => this.loop());
-
-        const now = performance.now();
-        // dt в секундах
-        let dt = (now - this.lastTime) / 1000;
-        this.lastTime = now;
-
-        // Если вкладка спала слишком долго, ограничиваем скачок (чтобы не зависло)
-        // Но 1 секунды достаточно, чтобы всё "догнать" в цикле
-        if (dt > 1) dt = 1; 
-
-        this.accumulator += dt;
-
-        // "Нагоняем" физику: выполняем update() столько раз, сколько шагов пропущено
-        while (this.accumulator >= this.step) {
-            this.update(); // Один шаг физики
-            this.accumulator -= this.step;
-        }
-
-        this.draw(); // Рисуем один раз в конце
-    }
-
-    // Теперь update() - это ОДИН шаг физики (1/60 секунды)
     update() {
         if (this.state === 'MOVING') {
-            let active = false; 
-            const steps = CFG.subSteps; // Внутренние под-шаги для точности столкновений
-            
+            let active = false; const steps = CFG.subSteps;
             for(let s=0; s<steps; s++) {
                 this.units.forEach(u => {
-                    // Скорость делится на subSteps, но умножается, так как update вызывается 60 раз в сек
-                    // Логика осталась той же: u.x += u.vx / steps
-                    // Но теперь это гарантированно выполняется 60 раз в секунду игрового времени
-                    u.x += u.vx / steps; 
-                    u.y += u.vy / steps;
+                    u.x += u.vx / steps; u.y += u.vy / steps;
                     for (let w of this.walls) this.solveWall(u, w);
                 });
                 for (let i=0; i<this.units.length; i++) {
-                    for (let j=i+1; j<this.units.length; j++) {
-                        this.solveCollision(this.units[i], this.units[j]);
-                    }
+                    for (let j=i+1; j<this.units.length; j++) { this.solveCollision(this.units[i], this.units[j]); }
                 }
             }
-
             this.units.forEach(u => {
-                u.vx *= CFG.friction; 
-                u.vy *= CFG.friction;
-                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; 
-                else { u.vx = 0; u.vy = 0; }
+                u.vx *= CFG.friction; u.vy *= CFG.friction;
+                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; else { u.vx = 0; u.vy = 0; }
             });
-
             if (!active && this.isSimulating) {
                 const activeUnit = this.getActiveUnit();
                 if (this.isOnline && activeUnit.team === this.myTeam) {
@@ -526,16 +482,6 @@ class Game {
                 }
             }
         }
-    }
-
-    // --- ОСТАЛЬНЫЕ МЕТОДЫ (РИСОВАНИЕ И ФИЗИКА) ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ ---
-    // (Я перенес код отрисовки в отдельный метод draw() для чистоты цикла)
-
-    draw() {
-        this.ctx.clearRect(0,0, CFG.width, CFG.height);
-        this.drawBackground();
-        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
-        this.units.forEach(u => this.drawUnit(u));
     }
 
     solveWall(u, w) {
@@ -777,13 +723,23 @@ class Game {
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
     }
+
+    loop() {
+        this.update();
+        this.ctx.clearRect(0,0, CFG.width, CFG.height);
+        this.drawBackground();
+        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        this.units.forEach(u => this.drawUnit(u));
+        requestAnimationFrame(() => this.loop());
+    }
 }
 
-// ЗАПУСК
-if(p1Param && p2Param) {
-    new Game(p1Param, p2Param);
+// ЗАПУСК (ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЕ ПЕРЕМЕННЫЕ)
+if(p1Key && p2Key) {
+    new Game(p1Key, p2Key);
 } else {
-    window.location.href = 'lobby.html';
+    // В теории это уже обработано вверху, но на всякий случай
+    console.log("Ждем параметров...");
 }
 </script>
 </body>
