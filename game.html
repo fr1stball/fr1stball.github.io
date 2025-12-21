@@ -69,7 +69,6 @@
         }
         @keyframes floatUp { to { transform: translateY(-60px); opacity: 0; } }
         
-        /* Кнопка теперь вызывает disconnect() через ссылку, но это обрабатывает сервер */
         .back-btn {
             position: absolute; top: 20px; left: 20px;
             pointer-events: auto; padding: 10px 20px;
@@ -191,6 +190,11 @@ class Game {
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
 
+        // ПЕРЕМЕННЫЕ ДЛЯ ФИЗИКИ (Fixed Time Step)
+        this.lastTime = performance.now();
+        this.accumulator = 0;
+        this.step = 1 / 60; // 60 FPS физика (0.01666 сек)
+
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
 
@@ -281,7 +285,6 @@ class Game {
             this.nextTurnIndex();
         });
         
-        // --- НОВОЕ: ОБРАБОТКА ВЫХОДА СОПЕРНИКА ---
         socket.on('opponentLeft', () => {
             alert("Соперник покинул игру!");
             window.location.href = 'lobby.html';
@@ -366,25 +369,45 @@ class Game {
         this.startTurnLogic();
     }
 
+    // --- ИСПРАВЛЕННЫЙ ТАЙМЕР ---
+    // Теперь использует реальное время (Date.now), чтобы не отставать при сворачивании
     startTimer() {
         this.stopTimer();
-        this.turnTime = CFG.turnTimeSeconds;
-        this.updateTimerUI();
+        const endTime = Date.now() + CFG.turnTimeSeconds * 1000;
+        
+        // Сразу обновляем UI
+        this.updateTimerUI(CFG.turnTimeSeconds);
+
         this.timerInterval = setInterval(() => {
-            this.turnTime--;
-            this.updateTimerUI();
-            if (this.turnTime <= 0) {
+            const now = Date.now();
+            const left = Math.ceil((endTime - now) / 1000);
+            
+            // Если время вышло
+            if (left <= 0) {
                 this.stopTimer();
+                this.updateTimerUI(0);
+                
                 const activeUnit = this.getActiveUnit();
+                // Автоход делает только тот, чей это юнит
                 if (this.isOnline && activeUnit.team === this.myTeam) {
                     this.forceRandomTurn();
                 }
+            } else {
+                this.updateTimerUI(left);
             }
-        }, 1000);
+        }, 200); // Проверяем 5 раз в секунду для плавности
     }
 
-    stopTimer() { if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } document.getElementById('timer-display').className = ''; }
-    updateTimerUI() { const el = document.getElementById('timer-display'); el.innerText = this.turnTime; if (this.turnTime <= 10) el.classList.add('low'); else el.classList.remove('low'); }
+    stopTimer() { 
+        if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } 
+        document.getElementById('timer-display').className = ''; 
+    }
+    
+    updateTimerUI(seconds) { 
+        const el = document.getElementById('timer-display'); 
+        el.innerText = seconds; 
+        if (seconds <= 10) el.classList.add('low'); else el.classList.remove('low'); 
+    }
 
     forceRandomTurn() {
         const unit = this.getActiveUnit();
@@ -440,22 +463,60 @@ class Game {
         this.updateBanner('Движение...', 'grey');
     }
 
+    // --- ИСПРАВЛЕННЫЙ ИГРОВОЙ ЦИКЛ (FIXED TIME STEP) ---
+    // Это гарантирует, что физика догонит время, даже если вкладка спала
+    loop() {
+        requestAnimationFrame(() => this.loop());
+
+        const now = performance.now();
+        // dt в секундах
+        let dt = (now - this.lastTime) / 1000;
+        this.lastTime = now;
+
+        // Если вкладка спала слишком долго, ограничиваем скачок (чтобы не зависло)
+        // Но 1 секунды достаточно, чтобы всё "догнать" в цикле
+        if (dt > 1) dt = 1; 
+
+        this.accumulator += dt;
+
+        // "Нагоняем" физику: выполняем update() столько раз, сколько шагов пропущено
+        while (this.accumulator >= this.step) {
+            this.update(); // Один шаг физики
+            this.accumulator -= this.step;
+        }
+
+        this.draw(); // Рисуем один раз в конце
+    }
+
+    // Теперь update() - это ОДИН шаг физики (1/60 секунды)
     update() {
         if (this.state === 'MOVING') {
-            let active = false; const steps = CFG.subSteps;
+            let active = false; 
+            const steps = CFG.subSteps; // Внутренние под-шаги для точности столкновений
+            
             for(let s=0; s<steps; s++) {
                 this.units.forEach(u => {
-                    u.x += u.vx / steps; u.y += u.vy / steps;
+                    // Скорость делится на subSteps, но умножается, так как update вызывается 60 раз в сек
+                    // Логика осталась той же: u.x += u.vx / steps
+                    // Но теперь это гарантированно выполняется 60 раз в секунду игрового времени
+                    u.x += u.vx / steps; 
+                    u.y += u.vy / steps;
                     for (let w of this.walls) this.solveWall(u, w);
                 });
                 for (let i=0; i<this.units.length; i++) {
-                    for (let j=i+1; j<this.units.length; j++) { this.solveCollision(this.units[i], this.units[j]); }
+                    for (let j=i+1; j<this.units.length; j++) {
+                        this.solveCollision(this.units[i], this.units[j]);
+                    }
                 }
             }
+
             this.units.forEach(u => {
-                u.vx *= CFG.friction; u.vy *= CFG.friction;
-                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; else { u.vx = 0; u.vy = 0; }
+                u.vx *= CFG.friction; 
+                u.vy *= CFG.friction;
+                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; 
+                else { u.vx = 0; u.vy = 0; }
             });
+
             if (!active && this.isSimulating) {
                 const activeUnit = this.getActiveUnit();
                 if (this.isOnline && activeUnit.team === this.myTeam) {
@@ -467,6 +528,16 @@ class Game {
         }
     }
 
+    // --- ОСТАЛЬНЫЕ МЕТОДЫ (РИСОВАНИЕ И ФИЗИКА) ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ ---
+    // (Я перенес код отрисовки в отдельный метод draw() для чистоты цикла)
+
+    draw() {
+        this.ctx.clearRect(0,0, CFG.width, CFG.height);
+        this.drawBackground();
+        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        this.units.forEach(u => this.drawUnit(u));
+    }
+
     solveWall(u, w) {
         const dist = this.getDistToLine(u, w.p1, w.p2);
         if (dist < CFG.radius) {
@@ -475,23 +546,29 @@ class Game {
             const t = ((u.x - w.p1.x)*nx + (u.y - w.p1.y)*ny);
             let cx = w.p1.x + t*nx; let cy = w.p1.y + t*ny; 
             if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
-            const nxColl = (u.x - cx) / dist; const nyColl = (u.y - cy) / dist;
-            u.x += nxColl * (CFG.radius - dist); u.y += nyColl * (CFG.radius - dist);
+            const nxColl = (u.x - cx) / dist; 
+            const nyColl = (u.y - cy) / dist;
+            u.x += nxColl * (CFG.radius - dist);
+            u.y += nyColl * (CFG.radius - dist);
             const dp = u.vx * nxColl + u.vy * nyColl;
-            u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce; u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
+            u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
+            u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
             if (u.isDead && Math.abs(dp) > 2) { this.heal(u, CFG.reviveAmount); }
         }
     }
 
     solveCollision(u1, u2) {
-        const dx = u2.x - u1.x; const dy = u2.y - u1.y; const dist = Math.sqrt(dx*dx + dy*dy);
+        const dx = u2.x - u1.x; const dy = u2.y - u1.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
         if (dist < CFG.radius * 2) {
             const nx = dx / dist; const ny = dy / dist; const overlap = (CFG.radius * 2 - dist) / 2;
             u1.x -= nx * overlap; u1.y -= ny * overlap; u2.x += nx * overlap; u2.y += ny * overlap;
             const rvx = u1.vx - u2.vx; const rvy = u1.vy - u2.vy;
             const velNormal = rvx * nx + rvy * ny;
             if (velNormal < 0) return;
-            const impulse = velNormal; u1.vx -= impulse * nx; u1.vy -= impulse * ny; u2.vx += impulse * nx; u2.vy += impulse * ny;
+            const impulse = velNormal; 
+            u1.vx -= impulse * nx; u1.vy -= impulse * ny;
+            u2.vx += impulse * nx; u2.vy += impulse * ny;
             const impact = Math.abs(impulse);
             if (impact > 0.1) {
                 if (u1.team === u2.team) {
@@ -513,15 +590,34 @@ class Game {
     heal(u, amt) {
         if (!u.isDead) return;
         if (u.reviveCount >= CFG.maxRevives) return;
-        if(!u.lastHeal || Date.now() - u.lastHeal > 200) { u.hp += amt; this.floatText(u.x, u.y, `+${amt}`, '#3498db'); u.lastHeal = Date.now(); } else { u.hp += amt; }
-        if (u.hp >= u.maxHp) { u.hp = u.maxHp; u.isDead = false; u.vx *= 0.5; u.vy *= 0.5; u.reviveCount++; this.floatText(u.x, u.y, "ОЖИЛ!", '#f1c40f'); this.updateUI(); }
+        if(!u.lastHeal || Date.now() - u.lastHeal > 200) {
+            u.hp += amt;
+            this.floatText(u.x, u.y, `+${amt}`, '#3498db');
+            u.lastHeal = Date.now();
+        } else { u.hp += amt; }
+        if (u.hp >= u.maxHp) {
+            u.hp = u.maxHp;
+            u.isDead = false;
+            u.vx *= 0.5; u.vy *= 0.5;
+            u.reviveCount++;
+            this.floatText(u.x, u.y, "ОЖИЛ!", '#f1c40f');
+            this.updateUI();
+        }
     }
 
     dmg(u, amt) {
         if(u.isDead) return;
         u.hp -= amt;
-        if(!u.lastDmg || Date.now() - u.lastDmg > 500) { this.floatText(u.x, u.y, `-${Math.round(amt)}`, '#e74c3c'); u.lastDmg = Date.now(); }
-        if (u.hp <= 0) { u.hp = 0; u.isDead = true; u.vx*=0.5; u.vy*=0.5; this.updateUI(); }
+        if(!u.lastDmg || Date.now() - u.lastDmg > 500) {
+            this.floatText(u.x, u.y, `-${Math.round(amt)}`, '#e74c3c');
+            u.lastDmg = Date.now();
+        }
+        if (u.hp <= 0) { 
+            u.hp = 0; 
+            u.isDead = true; 
+            u.vx*=0.5; u.vy*=0.5; 
+            this.updateUI();
+        }
     }
 
     initArena() {
@@ -541,7 +637,9 @@ class Game {
             ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
             ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
             ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
-            ctx.beginPath(); this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); }); ctx.stroke();
+            ctx.beginPath();
+            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
+            ctx.stroke();
         }
     }
 
@@ -557,21 +655,27 @@ class Game {
         ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
         const img = ASSETS[u.imgKey];
         if (img && img.complete && img.naturalWidth !== 0) {
-            const sSize = Math.min(img.width, img.height); const sx = (img.width - sSize) / 2; const sy = (img.height - sSize) / 2;
+            const sSize = Math.min(img.width, img.height);
+            const sx = (img.width - sSize) / 2;
+            const sy = (img.height - sSize) / 2;
             ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
         } else {
             ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
-            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(u.emoji, 0, 5); 
+            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(u.emoji, 0, 5); 
         }
         ctx.restore();
-        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
+        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
         const pct = u.hp/u.maxHp;
         ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
         if (u.isDead) {
             if (u.reviveCount >= CFG.maxRevives) {
-                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
+                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); 
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
             } else {
-                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6); ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
+                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6);
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
             }
         } else {
             ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
@@ -673,18 +777,14 @@ class Game {
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
     }
-
-    loop() {
-        this.update();
-        this.ctx.clearRect(0,0, CFG.width, CFG.height);
-        this.drawBackground();
-        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
-        this.units.forEach(u => this.drawUnit(u));
-        requestAnimationFrame(() => this.loop());
-    }
 }
 
-new Game(p1Key, p2Key);
+// ЗАПУСК
+if(p1Param && p2Param) {
+    new Game(p1Param, p2Param);
+} else {
+    window.location.href = 'lobby.html';
+}
 </script>
 </body>
 </html>
