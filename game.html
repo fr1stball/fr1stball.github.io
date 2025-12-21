@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
-    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -107,7 +106,6 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -121,7 +119,6 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
-// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -193,26 +190,46 @@ class Game {
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
 
-        // ПЕРЕМЕННЫЕ ДЛЯ ФИЗИКИ (Fixed Time Step)
-        this.lastTime = performance.now();
-        this.accumulator = 0;
-        this.step = 1 / 60; // 60 FPS физика
-
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
-
-        // Слушатель для возвращения на вкладку (принудительный ресинхрон)
-        document.addEventListener("visibilitychange", () => {
-            if (!document.hidden) {
-                this.lastTime = performance.now(); // Сброс таймера, чтобы не было скачка
-                // Если мы были в движении, цикл сам догонит физику
-            }
-        });
 
         this.initArena();
         this.bindInput();
         this.setupNetwork(); 
-        this.loop();
+        
+        // ЗАПУСК ЧЕРЕЗ WEB WORKER (Фоновый режим)
+        this.startBackgroundLoop();
+    }
+
+    // --- НОВАЯ СИСТЕМА ЦИКЛА (WEB WORKER) ---
+    startBackgroundLoop() {
+        // Создаем воркер прямо из строки кода
+        const workerCode = `
+            let interval = null;
+            self.onmessage = function(e) {
+                if (e.data === 'start') {
+                    if (interval) clearInterval(interval);
+                    // 60 FPS = 1000 / 60 ≈ 16.6ms
+                    interval = setInterval(() => {
+                        self.postMessage('tick');
+                    }, 16);
+                } else if (e.data === 'stop') {
+                    clearInterval(interval);
+                }
+            };
+        `;
+        
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        this.ticker = new Worker(workerUrl);
+
+        // Когда воркер тикает, мы обновляем игру
+        this.ticker.onmessage = () => {
+            this.loop();
+        };
+
+        // Запускаем
+        this.ticker.postMessage('start');
     }
 
     fitScreen() {
@@ -385,7 +402,6 @@ class Game {
         this.turnTime = CFG.turnTimeSeconds;
         this.updateTimerUI();
         
-        // Используем Date.now() для защиты от зависания вкладки
         const endTime = Date.now() + CFG.turnTimeSeconds * 1000;
 
         this.timerInterval = setInterval(() => {
@@ -402,7 +418,7 @@ class Game {
             } else {
                 this.updateTimerUI(left);
             }
-        }, 200); // Обновляем UI 5 раз в секунду
+        }, 200);
     }
 
     stopTimer() { if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } document.getElementById('timer-display').className = ''; }
@@ -462,35 +478,13 @@ class Game {
         this.updateBanner('Движение...', 'grey');
     }
 
-    // --- ИСПРАВЛЕННЫЙ ЦИКЛ С ДОГОНЯЛКОЙ ВРЕМЕНИ ---
+    // --- ОСНОВНОЙ ЦИКЛ (Вызывается воркером 60 раз в сек) ---
     loop() {
-        requestAnimationFrame(() => this.loop());
-
-        const now = performance.now();
-        let dt = (now - this.lastTime) / 1000;
-        this.lastTime = now;
-
-        // Разрешаем догонять до 60 секунд (чтобы при возврате на вкладку всё проигралось мгновенно)
-        if (dt > 60) dt = 60; 
-
-        this.accumulator += dt;
-
-        // Защита от бесконечного цикла, если прошло слишком много времени
-        // 3000 итераций = 50 секунд симуляции
-        let safetyCounter = 0;
-
-        while (this.accumulator >= this.step) {
-            this.update();
-            this.accumulator -= this.step;
-            
-            safetyCounter++;
-            if(safetyCounter > 3000) {
-                this.accumulator = 0; // Сбрасываем хвост, если слишком долго
-                break; 
-            }
-        }
-
-        this.draw();
+        this.update();
+        this.ctx.clearRect(0,0, CFG.width, CFG.height);
+        this.drawBackground();
+        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        this.units.forEach(u => this.drawUnit(u));
     }
 
     update() {
@@ -623,14 +617,6 @@ class Game {
             this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
             ctx.stroke();
         }
-    }
-
-    draw() {
-        const ctx = this.ctx;
-        ctx.clearRect(0,0, CFG.width, CFG.height);
-        this.drawBackground();
-        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
-        this.units.forEach(u => this.drawUnit(u));
     }
 
     drawUnit(u) {
