@@ -114,35 +114,26 @@ const HERO_STATS = {
 };
 
 const ASSETS = {
-    bg: new Image(),
-    ranger: new Image(),
-    bear: new Image(),
-    wolf: new Image(),
-    poacher: new Image()
+    bg: new Image(), ranger: new Image(), bear: new Image(), wolf: new Image(), poacher: new Image()
 };
-
-ASSETS.bg.src      = 'img/bg.png';
-ASSETS.ranger.src  = 'img/ranger.png';
-ASSETS.bear.src    = 'img/bear.png';
-ASSETS.wolf.src    = 'img/wolf.png';
+ASSETS.bg.src = 'img/bg.png';
+ASSETS.ranger.src = 'img/ranger.png';
+ASSETS.bear.src = 'img/bear.png';
+ASSETS.wolf.src = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
-// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
+// --- ИНИЦИАЛИЗАЦИЯ ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Param = urlParams.get('p1');
 const p2Param = urlParams.get('p2');
 
-// Если параметров нет, возвращаем в лобби
-if (!p1Param || !p2Param) {
-    window.location.href = 'lobby.html';
-}
+if (!p1Param || !p2Param) window.location.href = 'lobby.html';
 
-// ПОДКЛЮЧЕНИЕ К СЕРВЕРУ
+// ПОДКЛЮЧЕНИЕ
 const socket = io("https://forest-fight-server.onrender.com", {
-    reconnection: true,             
-    reconnectionAttempts: 10,       
-    reconnectionDelay: 1000,        
+    reconnection: true,
+    reconnectionAttempts: 10
 }); 
 
 const V = {
@@ -160,24 +151,16 @@ class Game {
         this.canvas = document.getElementById('arena');
         this.ctx = this.canvas.getContext('2d');
         
-        this.units = [];
-        this.walls = [];
+        this.units = []; this.walls = [];
         this.state = 'AIMING'; 
         this.drag = { active: false, start: {x:0,y:0}, curr: {x:0,y:0}, unitId: null };
+        this.turnTime = CFG.turnTimeSeconds; this.timerInterval = null;
+        this.turnOrder = [0, 2, 1, 3]; this.turnStep = 0; this.activeUnitId = 0; 
+        this.p1Key = p1Key; this.p2Key = p2Key;
+        this.isOnline = true; this.roomName = null; this.myTeam = null; this.canControl = false; 
         
-        this.turnTime = CFG.turnTimeSeconds;
-        this.timerInterval = null;
-        this.turnOrder = [0, 2, 1, 3]; 
-        this.turnStep = 0;
-        this.activeUnitId = 0; 
-
-        this.p1Key = p1Key;
-        this.p2Key = p2Key;
-
-        this.isOnline = true;
-        this.roomName = null;
-        this.myTeam = null; 
-        this.canControl = false; 
+        // Флаг успешного логина
+        this.isLoggedIn = false;
 
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
@@ -185,49 +168,43 @@ class Game {
         this.initArena();
         this.bindInput();
         
-        this.setupNetwork(); // Запуск сети
+        this.setupNetwork(); 
         this.loop();
     }
 
     setupNetwork() {
-        // !!! ГЛАВНОЕ ИСПРАВЛЕНИЕ: Ждем подключения, потом шлем логин !!!
-        
-        // 1. Если подключились
-        socket.on('connect', () => {
-            console.log("Connected! Logging in...");
-            socket.emit('login', myUsername);
-        });
+        // --- АГРЕССИВНЫЙ ЛОГИН ---
+        // Пытаемся отправить логин каждую секунду, пока сервер не ответит
+        const loginInterval = setInterval(() => {
+            if (this.isLoggedIn) {
+                clearInterval(loginInterval);
+                return;
+            }
+            if (socket.connected) {
+                console.log("Отправка логина...");
+                socket.emit('login', myUsername);
+            }
+        }, 1000);
 
-        // 2. Если вдруг уже были подключены (быстрый реконнект)
-        if (socket.connected) {
-            console.log("Already connected. Logging in...");
-            socket.emit('login', myUsername);
-        }
-
-        // 3. Сервер подтвердил логин -> ищем матч
+        // Сервер ответил!
         socket.on('loginSuccess', (userData) => {
-            console.log("Login success:", userData.username);
+            if (this.isLoggedIn) return; // Уже вошли
+            
+            this.isLoggedIn = true;
+            console.log("Успешный вход:", userData.username);
             this.updateBanner("Поиск соперника...", "grey");
             socket.emit('findMatch');
         });
 
-        // 4. Матч найден
         socket.on('gameStart', (data) => {
             this.roomName = data.room;
             this.myTeam = data.role;
-            
             this.initUnitsWithSync(this.roomName); 
-
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
-            
             this.canControl = true; 
-            
-            setTimeout(() => {
-                this.startTurnLogic();
-            }, 2000);
+            setTimeout(() => { this.startTurnLogic(); }, 2000);
         });
 
-        // 5. Ход врага
         socket.on('enemyShoot', (data) => {
             this.shoot(data.unitId, data.vector, true);
         });
@@ -237,30 +214,17 @@ class Game {
         const sx = CFG.wallPadding + CFG.cornerCut + 30;
         const my = CFG.height / 2;
         const spr = 130;
-
-        const spots = [
-            { x: sx, y: my - spr },             
-            { x: CFG.width - sx, y: my - spr }, 
-            { x: sx, y: my + spr },             
-            { x: CFG.width - sx, y: my + spr }  
-        ];
-
-        const patterns = [
-            [0, 2, 1, 3], [0, 1, 2, 3], [3, 0, 2, 1], [1, 3, 0, 2]
-        ];
-
+        const spots = [ { x: sx, y: my - spr }, { x: CFG.width - sx, y: my - spr }, { x: sx, y: my + spr }, { x: CFG.width - sx, y: my + spr } ];
+        const patterns = [ [0, 2, 1, 3], [0, 1, 2, 3], [3, 0, 2, 1], [1, 3, 0, 2] ];
         let seed = 0;
         for(let i=0; i<seedString.length; i++) seed += seedString.charCodeAt(i);
         const mapIndex = seed % patterns.length;
         const map = patterns[mapIndex];
-
         this.units = [];
-        
         this.spawnUnit('green', this.p1Key, spots[map[0]].x, spots[map[0]].y);
         this.spawnUnit('green', this.p2Key, spots[map[1]].x, spots[map[1]].y);
         this.spawnUnit('red', 'poacher', spots[map[2]].x, spots[map[2]].y);
         this.spawnUnit('red', 'wolf',    spots[map[3]].x, spots[map[3]].y);
-
         this.updateUI();
     }
 
@@ -268,45 +232,28 @@ class Game {
         const stats = HERO_STATS[key];
         const safeStats = stats || HERO_STATS['ranger'];
         const safeKey = stats ? key : 'ranger';
-        
         this.units.push({
-            id: this.units.length,
-            team: team,
-            name: safeStats.name,
-            imgKey: safeKey,
-            emoji: safeStats.emoji,
-            x: x, y: y, vx: 0, vy: 0,
-            hp: safeStats.hp, maxHp: safeStats.hp, dmg: safeStats.dmg,
-            isDead: false,
-            reviveCount: 0
+            id: this.units.length, team: team, name: safeStats.name, imgKey: safeKey, emoji: safeStats.emoji,
+            x: x, y: y, vx: 0, vy: 0, hp: safeStats.hp, maxHp: safeStats.hp, dmg: safeStats.dmg,
+            isDead: false, reviveCount: 0
         });
     }
 
-    getActiveUnit() {
-        return this.units[this.activeUnitId];
-    }
+    getActiveUnit() { return this.units[this.activeUnitId]; }
 
     startTurnLogic() {
         const scheduledUnitId = this.turnOrder[this.turnStep % 4];
         let scheduledUnit = this.units[scheduledUnitId];
-
         if (scheduledUnit.isDead) {
             const ally = this.units.find(u => u.team === scheduledUnit.team && u.id !== scheduledUnitId && !u.isDead);
             if (ally) {
                 this.activeUnitId = ally.id;
                 this.floatText(ally.x, ally.y, "ЗА ДРУГА!", "#f1c40f");
-            } else {
-                this.nextTurnIndex();
-                return;
-            }
-        } else {
-            this.activeUnitId = scheduledUnitId;
-        }
-
+            } else { this.nextTurnIndex(); return; }
+        } else { this.activeUnitId = scheduledUnitId; }
         const activeUnit = this.getActiveUnit();
         this.updateBanner(`ХОД: ${activeUnit.name}`, activeUnit.team);
         this.updateUI();
-        
         this.state = 'AIMING';
         this.startTimer();
     }
@@ -314,10 +261,8 @@ class Game {
     nextTurnIndex() {
         const gLive = this.units.some(u => u.team==='green' && !u.isDead);
         const rLive = this.units.some(u => u.team==='red' && !u.isDead);
-        
         if(!gLive) { this.stopTimer(); return this.updateBanner('Победа Браконьеров', 'win'); }
         if(!rLive) { this.stopTimer(); return this.updateBanner('Победа Лесхоза', 'win'); }
-
         this.turnStep++;
         this.startTurnLogic();
     }
@@ -326,44 +271,26 @@ class Game {
         this.stopTimer();
         this.turnTime = CFG.turnTimeSeconds;
         this.updateTimerUI();
-
         this.timerInterval = setInterval(() => {
             this.turnTime--;
             this.updateTimerUI();
-
             if (this.turnTime <= 0) {
                 this.stopTimer();
                 const activeUnit = this.getActiveUnit();
-                if (this.isOnline && activeUnit.team === this.myTeam) {
-                    this.forceRandomTurn();
-                }
+                if (this.isOnline && activeUnit.team === this.myTeam) { this.forceRandomTurn(); }
             }
         }, 1000);
     }
 
-    stopTimer() {
-        if (this.timerInterval) {
-            clearInterval(this.timerInterval);
-            this.timerInterval = null;
-        }
-        document.getElementById('timer-display').className = '';
-    }
-
-    updateTimerUI() {
-        const el = document.getElementById('timer-display');
-        el.innerText = this.turnTime;
-        if (this.turnTime <= 10) el.classList.add('low');
-        else el.classList.remove('low');
-    }
+    stopTimer() { if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } document.getElementById('timer-display').className = ''; }
+    updateTimerUI() { const el = document.getElementById('timer-display'); el.innerText = this.turnTime; if (this.turnTime <= 10) el.classList.add('low'); else el.classList.remove('low'); }
 
     forceRandomTurn() {
         const unit = this.getActiveUnit();
         if (unit.isDead) { this.nextTurnIndex(); return; }
-
         const angle = Math.random() * Math.PI * 2;
         const power = 100;
         const vec = { x: Math.cos(angle) * power, y: Math.sin(angle) * power };
-
         this.floatText(unit.x, unit.y, "AUTO!", '#f39c12');
         this.shoot(unit.id, vec);
     }
@@ -372,35 +299,23 @@ class Game {
         const onDown = (e) => {
             if (this.state !== 'AIMING') return;
             if (!this.canControl) return;
-
             const activeUnit = this.getActiveUnit();
             if (this.isOnline && activeUnit.team !== this.myTeam) return;
-
             const pos = this.getMousePos(e);
             const clickedUnit = this.units.find(u => !u.isDead && V.dist(pos, u) < CFG.radius * 2);
-            
             if (clickedUnit && clickedUnit.id === activeUnit.id) {
-                this.drag.active = true;
-                this.drag.unitId = clickedUnit.id;
-                this.drag.start = pos;
-                this.drag.curr = pos;
+                this.drag.active = true; this.drag.unitId = clickedUnit.id; this.drag.start = pos; this.drag.curr = pos;
             }
         };
-        const onMove = (e) => {
-            if (this.drag.active) this.drag.curr = this.getMousePos(e);
-        };
+        const onMove = (e) => { if (this.drag.active) this.drag.curr = this.getMousePos(e); };
         const onUp = (e) => {
             if (this.drag.active) {
-                if (e.button === 2) { 
-                    this.drag.active = false;
-                    return;
-                }
+                if (e.button === 2) { this.drag.active = false; return; }
                 this.drag.active = false;
                 const vec = V.sub(this.drag.start, this.drag.curr);
                 if (V.mag(vec) > 10) this.shoot(this.drag.unitId, vec);
             }
         };
-
         this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.drag.active = false; });
         this.canvas.addEventListener('mousedown', onDown);
         window.addEventListener('mousemove', onMove);
@@ -412,9 +327,7 @@ class Game {
 
     shoot(id, rawVec, isNetwork = false) {
         this.stopTimer();
-        if (!isNetwork && this.isOnline) {
-            socket.emit('shoot', { room: this.roomName, unitId: id, vector: rawVec });
-        }
+        if (!isNetwork && this.isOnline) { socket.emit('shoot', { room: this.roomName, unitId: id, vector: rawVec }); }
         const u = this.units[id];
         const dir = V.norm(rawVec);
         u.vx = dir.x * CFG.launchSpeed;
@@ -425,25 +338,19 @@ class Game {
 
     update() {
         if (this.state === 'MOVING') {
-            let active = false;
-            const steps = CFG.subSteps;
+            let active = false; const steps = CFG.subSteps;
             for(let s=0; s<steps; s++) {
                 this.units.forEach(u => {
-                    u.x += u.vx / steps; 
-                    u.y += u.vy / steps;
+                    u.x += u.vx / steps; u.y += u.vy / steps;
                     for (let w of this.walls) this.solveWall(u, w);
                 });
                 for (let i=0; i<this.units.length; i++) {
-                    for (let j=i+1; j<this.units.length; j++) {
-                        this.solveCollision(this.units[i], this.units[j]);
-                    }
+                    for (let j=i+1; j<this.units.length; j++) { this.solveCollision(this.units[i], this.units[j]); }
                 }
             }
             this.units.forEach(u => {
-                u.vx *= CFG.friction;
-                u.vy *= CFG.friction;
-                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true;
-                else { u.vx = 0; u.vy = 0; }
+                u.vx *= CFG.friction; u.vy *= CFG.friction;
+                if (V.mag({x:u.vx, y:u.vy}) > CFG.stopSpeed) active = true; else { u.vx = 0; u.vy = 0; }
             });
             if (!active) this.nextTurnIndex();
         }
@@ -453,36 +360,27 @@ class Game {
         const dist = this.getDistToLine(u, w.p1, w.p2);
         if (dist < CFG.radius) {
             const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
-            const lenW = Math.sqrt(dx*dx + dy*dy);
-            const nx = dx/lenW; const ny = dy/lenW;
+            const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW;
             const t = ((u.x - w.p1.x)*nx + (u.y - w.p1.y)*ny);
             let cx = w.p1.x + t*nx; let cy = w.p1.y + t*ny; 
             if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
-            const nxColl = (u.x - cx) / dist; 
-            const nyColl = (u.y - cy) / dist;
-            u.x += nxColl * (CFG.radius - dist);
-            u.y += nyColl * (CFG.radius - dist);
+            const nxColl = (u.x - cx) / dist; const nyColl = (u.y - cy) / dist;
+            u.x += nxColl * (CFG.radius - dist); u.y += nyColl * (CFG.radius - dist);
             const dp = u.vx * nxColl + u.vy * nyColl;
-            u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
-            u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
+            u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce; u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
             if (u.isDead && Math.abs(dp) > 2) { this.heal(u, CFG.reviveAmount); }
         }
     }
 
     solveCollision(u1, u2) {
-        const dx = u2.x - u1.x; const dy = u2.y - u1.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
+        const dx = u2.x - u1.x; const dy = u2.y - u1.y; const dist = Math.sqrt(dx*dx + dy*dy);
         if (dist < CFG.radius * 2) {
-            const nx = dx / dist; const ny = dy / dist;
-            const overlap = (CFG.radius * 2 - dist) / 2;
-            u1.x -= nx * overlap; u1.y -= ny * overlap;
-            u2.x += nx * overlap; u2.y += ny * overlap;
+            const nx = dx / dist; const ny = dy / dist; const overlap = (CFG.radius * 2 - dist) / 2;
+            u1.x -= nx * overlap; u1.y -= ny * overlap; u2.x += nx * overlap; u2.y += ny * overlap;
             const rvx = u1.vx - u2.vx; const rvy = u1.vy - u2.vy;
             const velNormal = rvx * nx + rvy * ny;
             if (velNormal < 0) return;
-            const impulse = velNormal; 
-            u1.vx -= impulse * nx; u1.vy -= impulse * ny;
-            u2.vx += impulse * nx; u2.vy += impulse * ny;
+            const impulse = velNormal; u1.vx -= impulse * nx; u1.vy -= impulse * ny; u2.vx += impulse * nx; u2.vy += impulse * ny;
             const impact = Math.abs(impulse);
             if (impact > 0.1) {
                 if (u1.team === u2.team) {
@@ -504,34 +402,15 @@ class Game {
     heal(u, amt) {
         if (!u.isDead) return;
         if (u.reviveCount >= CFG.maxRevives) return;
-        if(!u.lastHeal || Date.now() - u.lastHeal > 200) {
-            u.hp += amt;
-            this.floatText(u.x, u.y, `+${amt}`, '#3498db');
-            u.lastHeal = Date.now();
-        } else { u.hp += amt; }
-        if (u.hp >= u.maxHp) {
-            u.hp = u.maxHp;
-            u.isDead = false;
-            u.vx *= 0.5; u.vy *= 0.5;
-            u.reviveCount++;
-            this.floatText(u.x, u.y, "ОЖИЛ!", '#f1c40f');
-            this.updateUI();
-        }
+        if(!u.lastHeal || Date.now() - u.lastHeal > 200) { u.hp += amt; this.floatText(u.x, u.y, `+${amt}`, '#3498db'); u.lastHeal = Date.now(); } else { u.hp += amt; }
+        if (u.hp >= u.maxHp) { u.hp = u.maxHp; u.isDead = false; u.vx *= 0.5; u.vy *= 0.5; u.reviveCount++; this.floatText(u.x, u.y, "ОЖИЛ!", '#f1c40f'); this.updateUI(); }
     }
 
     dmg(u, amt) {
         if(u.isDead) return;
         u.hp -= amt;
-        if(!u.lastDmg || Date.now() - u.lastDmg > 500) {
-            this.floatText(u.x, u.y, `-${Math.round(amt)}`, '#e74c3c');
-            u.lastDmg = Date.now();
-        }
-        if (u.hp <= 0) { 
-            u.hp = 0; 
-            u.isDead = true; 
-            u.vx*=0.5; u.vy*=0.5; 
-            this.updateUI();
-        }
+        if(!u.lastDmg || Date.now() - u.lastDmg > 500) { this.floatText(u.x, u.y, `-${Math.round(amt)}`, '#e74c3c'); u.lastDmg = Date.now(); }
+        if (u.hp <= 0) { u.hp = 0; u.isDead = true; u.vx*=0.5; u.vy*=0.5; this.updateUI(); }
     }
 
     drawBackground() {
@@ -544,9 +423,7 @@ class Game {
             ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
             ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
             ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
-            ctx.beginPath();
-            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
-            ctx.stroke();
+            ctx.beginPath(); this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); }); ctx.stroke();
         }
     }
 
@@ -557,33 +434,26 @@ class Game {
         if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.5)';
         ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
         if (this.state==='AIMING' && u.id === this.activeUnitId && !u.isDead) {
-            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2);
-            ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
+            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2); ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
         }
         ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
         const img = ASSETS[u.imgKey];
         if (img && img.complete && img.naturalWidth !== 0) {
-            const sSize = Math.min(img.width, img.height);
-            const sx = (img.width - sSize) / 2;
-            const sy = (img.height - sSize) / 2;
+            const sSize = Math.min(img.width, img.height); const sx = (img.width - sSize) / 2; const sy = (img.height - sSize) / 2;
             ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
         } else {
             ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
-            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-            ctx.fillText(u.emoji, 0, 5); 
+            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(u.emoji, 0, 5); 
         }
         ctx.restore();
-        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
-        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
         const pct = u.hp/u.maxHp;
         ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
         if (u.isDead) {
             if (u.reviveCount >= CFG.maxRevives) {
-                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); 
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
+                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
             } else {
-                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6);
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
+                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6); ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
             }
         } else {
             ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
@@ -645,8 +515,7 @@ class Game {
             const en = hit.enemy; this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
             this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
             this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
-            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
-            this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial'; this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
     }
@@ -666,11 +535,8 @@ class Game {
                 d.className = `hero-icon ${u.isDead?'dead':''}`;
                 if (u.id === this.activeUnitId) d.classList.add('active');
                 const img = ASSETS[u.imgKey];
-                if(img && img.complete && img.naturalWidth !== 0) {
-                     d.style.backgroundImage = `url(${img.src})`; d.innerText = '';
-                } else {
-                     d.innerText = u.emoji; d.style.color = '#fff'; d.style.display = 'flex';
-                }
+                if(img && img.complete && img.naturalWidth !== 0) { d.style.backgroundImage = `url(${img.src})`; d.innerText = ''; } 
+                else { d.innerText = u.emoji; d.style.color = '#fff'; d.style.display = 'flex'; }
                 div.appendChild(d);
             });
         };
@@ -680,13 +546,9 @@ class Game {
 
     floatText(x, y, txt, col) {
         const wrapper = document.getElementById('game-container');
-        const pctX = (x / CFG.width) * 100;
-        const pctY = (y / CFG.height) * 100;
-        const el = document.createElement('div');
-        el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
-        el.style.color = col; el.innerText = txt;
-        wrapper.appendChild(el);
-        setTimeout(()=>el.remove(), 1200);
+        const pctX = (x / CFG.width) * 100; const pctY = (y / CFG.height) * 100;
+        const el = document.createElement('div'); el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
+        el.style.color = col; el.innerText = txt; wrapper.appendChild(el); setTimeout(()=>el.remove(), 1200);
     }
 
     loop() {
@@ -703,7 +565,6 @@ class Game {
 if(p1Param && p2Param) {
     new Game(p1Param, p2Param);
 } else {
-    // Резервный возврат
     window.location.href = 'lobby.html';
 }
 </script>
