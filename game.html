@@ -78,15 +78,13 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
-        /* ОТЛАДОЧНАЯ КОНСОЛЬ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
             background: rgba(0,0,0,0.5); color: #0f0; 
             font-family: monospace; font-size: 12px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; 
-            z-index: 9999;
+            display: none; z-index: 9999;
         }
     </style>
 </head>
@@ -141,20 +139,14 @@ const HERO_STATS = {
 };
 
 const ASSETS = {
-    bg: new Image(),
-    ranger: new Image(),
-    bear: new Image(),
-    wolf: new Image(),
-    poacher: new Image()
+    bg: new Image(), ranger: new Image(), bear: new Image(), wolf: new Image(), poacher: new Image()
 };
-
-ASSETS.bg.src      = 'img/bg.png';
-ASSETS.ranger.src  = 'img/ranger.png';
-ASSETS.bear.src    = 'img/bear.png';
-ASSETS.wolf.src    = 'img/wolf.png';
+ASSETS.bg.src = 'img/bg.png';
+ASSETS.ranger.src = 'img/ranger.png';
+ASSETS.bear.src = 'img/bear.png';
+ASSETS.wolf.src = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
-// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Key = urlParams.get('p1');
@@ -191,8 +183,7 @@ class Game {
         this.canvas = document.getElementById('arena');
         this.ctx = this.canvas.getContext('2d');
         
-        this.units = [];
-        this.walls = [];
+        this.units = []; this.walls = [];
         this.state = 'AIMING'; 
         this.drag = { active: false, start: {x:0,y:0}, curr: {x:0,y:0}, unitId: null };
         this.turnTime = CFG.turnTimeSeconds; this.timerInterval = null;
@@ -202,8 +193,21 @@ class Game {
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
 
+        // ПЕРЕМЕННЫЕ ДЛЯ ФИЗИКИ (Fixed Time Step)
+        this.lastTime = performance.now();
+        this.accumulator = 0;
+        this.step = 1 / 60; // 60 FPS физика
+
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
+
+        // Слушатель для возвращения на вкладку (принудительный ресинхрон)
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                this.lastTime = performance.now(); // Сброс таймера, чтобы не было скачка
+                // Если мы были в движении, цикл сам догонит физику
+            }
+        });
 
         this.initArena();
         this.bindInput();
@@ -258,8 +262,6 @@ class Game {
             log("Login OK");
             document.getElementById('debug-log').style.display = 'none';
             this.updateBanner("Поиск соперника...", "grey");
-            
-            // --- ОТПРАВЛЯЕМ СВОИХ ГЕРОЕВ СЕРВЕРУ ---
             socket.emit('findMatch', { p1: p1Key, p2: p2Key });
         });
 
@@ -267,12 +269,8 @@ class Game {
             log("Match Found!");
             this.roomName = data.room;
             this.myTeam = data.role;
-            
-            // Получаем вражеских героев от сервера
             const enemyHeroes = data.enemyHeroes || { p1: 'poacher', p2: 'wolf' };
-            
             this.initUnitsWithSync(this.roomName, enemyHeroes); 
-
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             this.canControl = true; 
             setTimeout(() => { this.startTurnLogic(); }, 2000);
@@ -386,22 +384,29 @@ class Game {
         this.stopTimer();
         this.turnTime = CFG.turnTimeSeconds;
         this.updateTimerUI();
+        
+        // Используем Date.now() для защиты от зависания вкладки
+        const endTime = Date.now() + CFG.turnTimeSeconds * 1000;
+
         this.timerInterval = setInterval(() => {
-            this.turnTime--;
-            this.updateTimerUI();
-            if (this.turnTime <= 0) {
+            const now = Date.now();
+            const left = Math.ceil((endTime - now) / 1000);
+
+            if (left <= 0) {
                 this.stopTimer();
+                this.updateTimerUI(0);
                 const activeUnit = this.getActiveUnit();
-                // Только хозяин хода запускает рандом
                 if (this.isOnline && activeUnit.team === this.myTeam) {
                     this.forceRandomTurn();
                 }
+            } else {
+                this.updateTimerUI(left);
             }
-        }, 1000);
+        }, 200); // Обновляем UI 5 раз в секунду
     }
 
     stopTimer() { if (this.timerInterval) { clearInterval(this.timerInterval); this.timerInterval = null; } document.getElementById('timer-display').className = ''; }
-    updateTimerUI() { const el = document.getElementById('timer-display'); el.innerText = this.turnTime; if (this.turnTime <= 10) el.classList.add('low'); else el.classList.remove('low'); }
+    updateTimerUI(val) { const el = document.getElementById('timer-display'); el.innerText = val !== undefined ? val : this.turnTime; if (val <= 10) el.classList.add('low'); else el.classList.remove('low'); }
 
     forceRandomTurn() {
         const unit = this.getActiveUnit();
@@ -455,6 +460,37 @@ class Game {
         this.state = 'MOVING';
         this.isSimulating = true; 
         this.updateBanner('Движение...', 'grey');
+    }
+
+    // --- ИСПРАВЛЕННЫЙ ЦИКЛ С ДОГОНЯЛКОЙ ВРЕМЕНИ ---
+    loop() {
+        requestAnimationFrame(() => this.loop());
+
+        const now = performance.now();
+        let dt = (now - this.lastTime) / 1000;
+        this.lastTime = now;
+
+        // Разрешаем догонять до 60 секунд (чтобы при возврате на вкладку всё проигралось мгновенно)
+        if (dt > 60) dt = 60; 
+
+        this.accumulator += dt;
+
+        // Защита от бесконечного цикла, если прошло слишком много времени
+        // 3000 итераций = 50 секунд симуляции
+        let safetyCounter = 0;
+
+        while (this.accumulator >= this.step) {
+            this.update();
+            this.accumulator -= this.step;
+            
+            safetyCounter++;
+            if(safetyCounter > 3000) {
+                this.accumulator = 0; // Сбрасываем хвост, если слишком долго
+                break; 
+            }
+        }
+
+        this.draw();
     }
 
     update() {
@@ -587,6 +623,14 @@ class Game {
             this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
             ctx.stroke();
         }
+    }
+
+    draw() {
+        const ctx = this.ctx;
+        ctx.clearRect(0,0, CFG.width, CFG.height);
+        this.drawBackground();
+        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        this.units.forEach(u => this.drawUnit(u));
     }
 
     drawUnit(u) {
@@ -723,24 +767,9 @@ class Game {
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
     }
-
-    loop() {
-        this.update();
-        this.ctx.clearRect(0,0, CFG.width, CFG.height);
-        this.drawBackground();
-        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
-        this.units.forEach(u => this.drawUnit(u));
-        requestAnimationFrame(() => this.loop());
-    }
 }
 
-// ЗАПУСК (ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЕ ПЕРЕМЕННЫЕ)
-if(p1Key && p2Key) {
-    new Game(p1Key, p2Key);
-} else {
-    // В теории это уже обработано вверху, но на всякий случай
-    console.log("Ждем параметров...");
-}
+new Game(p1Key, p2Key);
 </script>
 </body>
 </html>
