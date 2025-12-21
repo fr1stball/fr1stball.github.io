@@ -78,7 +78,7 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
-        /* ОТЛАДОЧНАЯ КОНСОЛЬ НА ЭКРАНЕ */
+        /* ОТЛАДОЧНАЯ КОНСОЛЬ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
@@ -109,7 +109,7 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ОШИБОК ---
+// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -154,7 +154,7 @@ ASSETS.bear.src    = 'img/bear.png';
 ASSETS.wolf.src    = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
-// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
+// --- ИНИЦИАЛИЗАЦИЯ ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Param = urlParams.get('p1');
@@ -211,11 +211,10 @@ class Game {
         this.canControl = false; 
         this.isLoggedIn = false;
 
-        // !!! ВОТ ПРОПУЩЕННЫЕ МЕТОДЫ !!!
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
 
-        this.initArena();
+        this.initArena(); // ТЕПЕРЬ ЭТА ФУНКЦИЯ ЕСТЬ НИЖЕ
         this.bindInput();
         
         this.setupNetwork(); 
@@ -223,7 +222,24 @@ class Game {
         this.loop();
     }
 
-    // --- ВОССТАНОВЛЕННЫЙ МЕТОД ---
+    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ---
+    initArena() {
+        const pad = CFG.wallPadding;
+        const c = CFG.cornerCut;
+        const w = CFG.width;
+        const h = CFG.height;
+        const points = [
+            {x: pad + c, y: pad}, {x: w - pad - c, y: pad}, 
+            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c}, 
+            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad}, 
+            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
+        ];
+        this.walls = [];
+        for(let i=0; i<points.length; i++) {
+            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
+        }
+    }
+
     fitScreen() {
         const aspect = 16 / 9;
         let w = window.innerWidth;
@@ -236,7 +252,6 @@ class Game {
         this.canvas.height = CFG.height;
     }
 
-    // --- ВОССТАНОВЛЕННЫЙ МЕТОД ---
     getMousePos(evt) {
         const rect = this.canvas.getBoundingClientRect();
         const scaleX = this.canvas.width / rect.width;
@@ -280,9 +295,7 @@ class Game {
             if (this.isLoggedIn) return;
             this.isLoggedIn = true;
             log("Login OK: " + userData.username);
-            
             document.getElementById('debug-log').style.display = 'none';
-            
             this.updateBanner("Поиск соперника...", "grey");
             socket.emit('findMatch');
         });
@@ -291,12 +304,9 @@ class Game {
             log("Match Found! Room: " + data.room);
             this.roomName = data.room;
             this.myTeam = data.role;
-            
             this.initUnitsWithSync(this.roomName); 
-
             this.updateBanner(`БОЙ! Вы: ${this.myTeam === 'green' ? 'ЛЕСХОЗ' : 'БРАКОНЬЕРЫ'}`, this.myTeam);
             this.canControl = true; 
-            
             setTimeout(() => {
                 this.startTurnLogic();
             }, 2000);
