@@ -1,147 +1,97 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 
-// --- НАСТРОЙКИ СЕРВЕРА ---
 const app = express();
-app.use(cors()); // Разрешаем CORS запросы
+app.use(cors());
 
-// Простой маршрут, чтобы Render понимал, что сервер жив
-app.get('/', (req, res) => {
-    res.send('ForestFight Server is running...');
-});
+// Проверка жизни сервера
+app.get('/', (req, res) => res.send('Forest Server is running (Memory Mode)'));
 
 const server = http.createServer(app);
-
-// Настройка Socket.io
 const io = new Server(server, {
-    cors: {
-        origin: "*", // ВАЖНО: Разрешаем подключение с любого домена (GitHub Pages)
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] },
+    pingTimeout: 60000 // Ждать минуту перед разрывом при лагах
 });
 
-// --- БАЗА ДАННЫХ (SQLite) ---
-const db = new sqlite3.Database('./game.db', (err) => {
-    if (err) console.error("Ошибка подключения к БД:", err.message);
-    else console.log('Подключено к базе данных SQLite.');
-});
+// Хранилище в памяти (вместо БД)
+let players = {}; 
+let matchmakingQueue = [];
 
-// Создаем таблицу игроков, если её нет
-db.run(`CREATE TABLE IF NOT EXISTS players (
-    username TEXT PRIMARY KEY,
-    rating INTEGER DEFAULT 1000,
-    wins INTEGER DEFAULT 0
-)`);
-
-// --- ПЕРЕМЕННЫЕ ИГРЫ ---
-let matchmakingQueue = []; // Очередь игроков, ищущих матч
-
-// --- ЛОГИКА СОКЕТОВ ---
 io.on('connection', (socket) => {
-    console.log('Новое подключение:', socket.id);
+    console.log(`[CONNECT] ${socket.id}`);
 
-    // 1. АВТОРИЗАЦИЯ (LOGIN)
+    // 1. ЛОГИН
     socket.on('login', (username) => {
-        const safeName = username || "Player";
+        // Создаем игрока в памяти
+        players[socket.id] = {
+            id: socket.id,
+            username: username || "Player",
+            socket: socket
+        };
         
-        // Проверяем, есть ли игрок в базе
-        db.get("SELECT * FROM players WHERE username = ?", [safeName], (err, row) => {
-            if (err) return console.error(err);
-
-            if (row) {
-                // Игрок найден — загружаем данные
-                socket.userData = row;
-                socket.emit('loginSuccess', row);
-            } else {
-                // Игрок новый — регистрируем
-                const newUser = { username: safeName, rating: 1000, wins: 0 };
-                db.run("INSERT INTO players (username) VALUES (?)", [safeName], (err) => {
-                    if (!err) {
-                        socket.userData = newUser;
-                        socket.emit('loginSuccess', newUser);
-                    }
-                });
-            }
-        });
+        console.log(`[LOGIN] ${username} (${socket.id})`);
+        
+        // Мгновенно отвечаем клиенту
+        socket.emit('loginSuccess', { username: players[socket.id].username });
     });
 
-    // 2. ПОИСК МАТЧА
+    // 2. ПОИСК
     socket.on('findMatch', () => {
-        // Если игрок не авторизован или уже в очереди — игнорируем
-        if (!socket.userData) return;
-        if (matchmakingQueue.find(s => s.id === socket.id)) return;
+        const player = players[socket.id];
+        if (!player) {
+            // Если игрок не залогинен, пробуем его авто-залогинить и добавить
+            console.log(`[WARN] Socket ${socket.id} tried to find match without login`);
+            socket.emit('loginSuccess', { username: "Guest" }); // Просим клиента перелогиниться
+            return;
+        }
 
-        // Добавляем в очередь
-        matchmakingQueue.push(socket);
-        console.log(`Игрок ${socket.userData.username} в поиске. Всего в очереди: ${matchmakingQueue.length}`);
+        // Если уже в очереди - игнор
+        if (matchmakingQueue.find(p => p.id === socket.id)) return;
 
-        // Пытаемся создать пару
+        matchmakingQueue.push(player);
+        console.log(`[QUEUE] + ${player.username}. Всего: ${matchmakingQueue.length}`);
+
         tryMatchmaking();
     });
 
-    // 3. ОБРАБОТКА ВЫСТРЕЛА
+    // 3. ИГРА
     socket.on('shoot', (data) => {
-        // data содержит: { room, unitId, vector }
-        // Пересылаем данные всем в комнате, КРОМЕ отправителя
-        socket.to(data.room).emit('enemyShoot', {
-            unitId: data.unitId,
-            vector: data.vector
-        });
+        socket.to(data.room).emit('enemyShoot', data);
     });
 
-    // 4. ОТКЛЮЧЕНИЕ
+    // 4. ДИСКОННЕКТ
     socket.on('disconnect', () => {
-        console.log('Игрок отключился:', socket.id);
-        // Удаляем из очереди, если он там был
-        matchmakingQueue = matchmakingQueue.filter(s => s.id !== socket.id);
+        console.log(`[DISCONNECT] ${socket.id}`);
+        // Удаляем отовсюду
+        delete players[socket.id];
+        matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
     });
 });
 
-// Функция создания матчей
 function tryMatchmaking() {
-    // Пока в очереди есть хотя бы 2 человека
-    while (matchmakingQueue.length >= 2) {
+    if (matchmakingQueue.length >= 2) {
         const p1 = matchmakingQueue.shift();
         const p2 = matchmakingQueue.shift();
 
-        // Проверяем, не отвалился ли кто-то, пока ждал
-        if (!p1.connected || !p2.connected) {
-            if (p1.connected) matchmakingQueue.unshift(p1); // Вернуть живого в начало
-            if (p2.connected) matchmakingQueue.unshift(p2);
-            continue;
+        // Проверяем, живы ли сокеты
+        if (!p1.socket.connected || !p2.socket.connected) {
+            if (p1.socket.connected) matchmakingQueue.unshift(p1);
+            if (p2.socket.connected) matchmakingQueue.unshift(p2);
+            return;
         }
 
-        // Создаем комнату
         const roomName = `battle_${p1.id}_${p2.id}`;
-        p1.join(roomName);
-        p2.join(roomName);
+        p1.socket.join(roomName);
+        p2.socket.join(roomName);
 
-        console.log(`Матч создан: ${p1.userData.username} VS ${p2.userData.username}`);
+        console.log(`[START] ${p1.username} VS ${p2.username}`);
 
-        // Отправляем сигнал старта
-        // p1 будет "Зеленым" (Host), p2 будет "Красным" (Client)
-        io.to(p1.id).emit('gameStart', { 
-            room: roomName, 
-            role: 'green', 
-            opponent: p2.userData.username 
-        });
-
-        io.to(p2.id).emit('gameStart', { 
-            room: roomName, 
-            role: 'red', 
-            opponent: p1.userData.username 
-        });
+        io.to(p1.id).emit('gameStart', { room: roomName, role: 'green', opponent: p2.username });
+        io.to(p2.id).emit('gameStart', { room: roomName, role: 'red', opponent: p1.username });
     }
 }
 
-// --- ЗАПУСК СЕРВЕРА ---
-// process.env.PORT — это порт, который выдаст Render. 
-// 3000 — запасной вариант для локального запуска.
 const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
