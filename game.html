@@ -107,6 +107,7 @@
 </div>
 
 <script>
+// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -120,6 +121,7 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
+// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -207,7 +209,6 @@ class Game {
         this.initArena();
         this.bindInput();
         this.setupNetwork(); 
-        
         this.startBackgroundLoop();
     }
 
@@ -366,7 +367,7 @@ class Game {
             id: this.units.length, team: team, name: safeStats.name, imgKey: safeKey, emoji: safeStats.emoji,
             x: x, y: y, vx: 0, vy: 0, hp: safeStats.hp, maxHp: safeStats.hp, dmg: safeStats.dmg,
             isDead: false, reviveCount: 0,
-            lastHitByTeam: null // Кем был ударен последний раз
+            lastHitByTeam: null
         });
     }
 
@@ -464,9 +465,6 @@ class Game {
 
     shoot(id, rawVec, isNetwork = false) {
         this.stopTimer();
-        
-        // СБРОС ДАННЫХ ПЕРЕД ВЫСТРЕЛОМ
-        // Чтобы старые удары не влияли на новое воскрешение
         this.units.forEach(u => u.lastHitByTeam = null);
 
         if (!isNetwork && this.isOnline) {
@@ -544,9 +542,6 @@ class Game {
             const dp = u.vx * nxColl + u.vy * nyColl;
             u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
             u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
-            
-            // --- ЛОГИКА ВОСКРЕШЕНИЯ ОБ СТЕНУ ---
-            // Если мертв И удар был сильным И ударил союзник
             if (u.isDead && Math.abs(dp) > 2 && u.lastHitByTeam === u.team) { 
                 this.heal(u, CFG.reviveAmount); 
             }
@@ -568,7 +563,6 @@ class Game {
             const impact = Math.abs(impulse);
             
             if (impact > 0.1) {
-                // --- ЗАПИСЫВАЕМ КТО КОГО УДАРИЛ ---
                 u1.lastHitByTeam = u2.team;
                 u2.lastHitByTeam = u1.team;
 
@@ -693,55 +687,91 @@ class Game {
         return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
     }
 
-    // --- УЛУЧШЕННЫЙ RAYCAST (ВИДИТ МЕРТВЫХ) ---
+    // --- УЛУЧШЕННЫЙ ПРИЦЕЛ (С малым шагом и без пропуска мертвых) ---
     predictHit(u, vec) {
-        const maxDist = 2500; const dir = V.norm(vec); let cx = u.x; let cy = u.y; const step = 10;
+        // Симуляция траектории (маленький шаг для точности)
+        const dir = V.norm(vec); 
+        let simX = u.x; 
+        let simY = u.y; 
+        const step = 4; // Шаг 4 пикселя (соответствует скорости физики 4.5)
+        const maxDist = 2000;
+
         for(let d=0; d<maxDist; d+=step) {
-            cx += dir.x * step; cy += dir.y * step;
+            simX += dir.x * step; 
+            simY += dir.y * step;
+            
+            // Стены
             for(let w of this.walls) {
-                const dist = this.getDistToLine({x:cx,y:cy}, w.p1, w.p2);
+                const dist = this.getDistToLine({x: simX, y: simY}, w.p1, w.p2);
                 if(dist < CFG.radius) {
                     const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
                     const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW; 
                     const wnx = -ny; const wny = nx; const dot = dir.x*wnx + dir.y*wny;
-                    return { type: 'wall', x: cx, y: cy, rx: dir.x - 2*dot*wnx, ry: dir.y - 2*dot*wny };
+                    return { type: 'wall', x: simX, y: simY, rx: dir.x - 2*dot*wnx, ry: dir.y - 2*dot*wny };
                 }
             }
+            // Юниты (теперь и мертвые!)
             for(let other of this.units) {
-                // ТЕПЕРЬ ЛУЧ ВИДИТ И МЕРТВЫХ (Убрана проверка !other.isDead)
                 if(other.id === u.id) continue;
-                
-                const dist = Math.sqrt((cx - other.x)**2 + (cy - other.y)**2);
+                const dist = Math.sqrt((simX - other.x)**2 + (simY - other.y)**2);
                 if(dist < CFG.radius * 2) {
-                    let nx = cx - other.x; let ny = cy - other.y;
-                    const ln = Math.sqrt(nx*nx + ny*ny); nx/=ln; ny/=ln; const dot = dir.x*nx + dir.y*ny;
-                    return { type: 'unit', x: cx, y: cy, rx: dir.x - 2*dot*nx, ry: dir.y - 2*dot*ny, enemy: other.team !== u.team ? other : null };
+                    // Рассчитываем примерный отскок
+                    let nx = simX - other.x; let ny = simY - other.y;
+                    const ln = Math.sqrt(nx*nx + ny*ny); nx/=ln; ny/=ln;
+                    const dot = dir.x*nx + dir.y*ny;
+                    // Возвращаем точку удара
+                    return { type: 'unit', x: simX, y: simY, rx: dir.x - 2*dot*nx, ry: dir.y - 2*dot*ny, enemy: other };
                 }
             }
         }
-        return { type: 'none', x: cx, y: cy };
+        return { type: 'none', x: simX, y: simY };
     }
 
     drawAim() {
         const u = this.units[this.drag.unitId];
         const vec = V.sub(this.drag.start, this.drag.curr);
         const hit = this.predictHit(u, vec);
-        const startX = u.x + V.norm(vec).x * CFG.radius; const startY = u.y + V.norm(vec).y * CFG.radius;
-        this.ctx.beginPath(); this.ctx.moveTo(startX, startY); this.ctx.lineTo(hit.x, hit.y);
-        this.ctx.lineWidth = 6; this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
+        
+        // Луч строго из центра
+        const startX = u.x; 
+        const startY = u.y;
+
+        this.ctx.beginPath(); 
+        this.ctx.moveTo(startX, startY); 
+        this.ctx.lineTo(hit.x, hit.y);
+        this.ctx.lineWidth = 6; 
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        this.ctx.setLineDash([15,10]); 
+        this.ctx.stroke(); 
+        this.ctx.setLineDash([]);
+
         if(hit.type !== 'none' && hit.rx) {
-            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); this.ctx.fillStyle = '#fff'; this.ctx.fill();
-            const bounceLen = 50; this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.beginPath(); 
+            this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
+            this.ctx.fillStyle = '#fff'; 
+            this.ctx.fill();
+            
+            const bounceLen = 50; 
+            this.ctx.beginPath(); 
+            this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; this.ctx.stroke();
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; 
+            this.ctx.stroke();
         }
+        
         if(hit.enemy) {
-            const en = hit.enemy; this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
-            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
-            this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
-            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
-            this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            const en = hit.enemy; 
+            this.ctx.save(); 
+            this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; 
+            this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white'; 
+            this.ctx.lineWidth = 2; 
+            this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555'; 
+            this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center'; 
+            this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
     }
