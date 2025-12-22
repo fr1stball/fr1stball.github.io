@@ -92,7 +92,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
+        <a href="lobby.html" class="back-btn">⬅ Выход</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -189,6 +189,9 @@ class Game {
         this.isOnline = true; this.roomName = null; this.myTeam = null; 
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
+        
+        // Данные прицела врага
+        this.enemyDrag = null; // { unitId, start, curr }
 
         this.lastTime = performance.now();
         this.accumulator = 0;
@@ -292,6 +295,8 @@ class Game {
         });
 
         socket.on('enemyShoot', (data) => {
+            // Очищаем прицел врага, так как он выстрелил
+            this.enemyDrag = null;
             this.shoot(data.unitId, data.vector, true);
         });
 
@@ -311,6 +316,16 @@ class Game {
             this.nextTurnIndex();
         });
         
+        // --- ПРИЦЕЛ ВРАГА ---
+        socket.on('enemyAim', (data) => {
+            // Сохраняем данные прицеливания врага
+            this.enemyDrag = data; // { unitId, vec }
+        });
+
+        socket.on('enemyEndAim', () => {
+            this.enemyDrag = null;
+        });
+
         socket.on('opponentLeft', () => {
             alert("Соперник покинул игру!");
             window.location.href = 'lobby.html';
@@ -371,6 +386,9 @@ class Game {
     getActiveUnit() { return this.units[this.activeUnitId]; }
 
     startTurnLogic() {
+        // Очищаем прицелы
+        this.enemyDrag = null; 
+        
         const scheduledUnitId = this.turnOrder[this.turnStep % 4];
         let scheduledUnit = this.units[scheduledUnitId];
         if (scheduledUnit.isDead) {
@@ -431,6 +449,9 @@ class Game {
     }
 
     bindInput() {
+        // Тайм-аут отправки данных (чтобы не спамить)
+        let lastSendTime = 0;
+
         const onDown = (e) => {
             if (this.state !== 'AIMING') return;
             if (!this.canControl) return;
@@ -442,16 +463,40 @@ class Game {
                 this.drag.active = true; this.drag.unitId = clickedUnit.id; this.drag.start = pos; this.drag.curr = pos;
             }
         };
-        const onMove = (e) => { if (this.drag.active) this.drag.curr = this.getMousePos(e); };
+        const onMove = (e) => { 
+            if (this.drag.active) {
+                this.drag.curr = this.getMousePos(e);
+                
+                // Отправляем данные на сервер не чаще 30мс
+                const now = Date.now();
+                if (now - lastSendTime > 30) {
+                    const vec = V.sub(this.drag.start, this.drag.curr);
+                    // Отправляем вектор
+                    socket.emit('aim', {
+                        room: this.roomName,
+                        unitId: this.drag.unitId,
+                        vec: vec
+                    });
+                    lastSendTime = now;
+                }
+            }
+        };
         const onUp = (e) => {
             if (this.drag.active) {
-                if (e.button === 2) { this.drag.active = false; return; }
+                // Если нажали ПКМ - отмена
+                if (e.button === 2) { 
+                    this.drag.active = false; 
+                    socket.emit('endAim', { room: this.roomName });
+                    return; 
+                }
+                
                 this.drag.active = false;
                 const vec = V.sub(this.drag.start, this.drag.curr);
                 if (V.mag(vec) > 10) this.shoot(this.drag.unitId, vec);
+                else socket.emit('endAim', { room: this.roomName }); // Если просто кликнули без тяги
             }
         };
-        this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.drag.active = false; });
+        this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.drag.active = false; socket.emit('endAim', { room: this.roomName }); });
         this.canvas.addEventListener('mousedown', onDown);
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
@@ -493,7 +538,20 @@ class Game {
             if(safetyCounter > 3000) { this.accumulator = 0; break; }
         }
 
-        if (this.state === 'AIMING' && this.drag.active) this.drawAim();
+        if (this.state === 'AIMING') {
+            // Рисуем свой прицел
+            if (this.drag.active) this.drawAim(this.units[this.drag.unitId], V.sub(this.drag.start, this.drag.curr), false);
+            
+            // Рисуем прицел врага
+            if (this.enemyDrag) {
+                // this.enemyDrag.vec - это вектор
+                const u = this.units[this.enemyDrag.unitId];
+                if (u && !u.isDead) {
+                    this.drawAim(u, this.enemyDrag.vec, true);
+                }
+            }
+        }
+
         this.units.forEach(u => this.drawUnit(u));
     }
 
@@ -613,207 +671,82 @@ class Game {
         }
     }
 
-    initArena() {
-        const pad = CFG.wallPadding; const c = CFG.cornerCut; const w = CFG.width; const h = CFG.height;
-        const points = [ {x: pad + c, y: pad}, {x: w - pad - c, y: pad}, {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c}, {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad}, {x: pad, y: h - pad - c}, {x: pad, y: pad + c} ];
-        this.walls = [];
-        for(let i=0; i<points.length; i++) { this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] }); }
-    }
-
-    drawBackground() {
-        const ctx = this.ctx;
-        if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
-            ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
-        } else {
-            ctx.fillStyle = '#2d5a27'; ctx.fillRect(0,0, CFG.width, CFG.height);
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 10;
-            ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
-            ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
-            ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
-            ctx.beginPath();
-            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
-            ctx.stroke();
-        }
-    }
-
-    drawUnit(u) {
-        const ctx = this.ctx;
-        const r = CFG.radius;
-        ctx.save(); ctx.translate(u.x, u.y);
-        if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.5)';
-        ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
-        if (this.state==='AIMING' && u.id === this.activeUnitId && !u.isDead) {
-            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2); ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
-        }
-        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
-        const img = ASSETS[u.imgKey];
-        if (img && img.complete && img.naturalWidth !== 0) {
-            const sSize = Math.min(img.width, img.height);
-            const sx = (img.width - sSize) / 2;
-            const sy = (img.height - sSize) / 2;
-            ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
-        } else {
-            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
-            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-            ctx.fillText(u.emoji, 0, 5); 
-        }
-        ctx.restore();
-        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
-        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
-        const pct = u.hp/u.maxHp;
-        ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
-        if (u.isDead) {
-            if (u.reviveCount >= CFG.maxRevives) {
-                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); 
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
-            } else {
-                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6);
-                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
-            }
-        } else {
-            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
-        }
-        ctx.restore();
-    }
-    
-    getDistToLine(u, p1, p2) {
-        const dx = p2.x - p1.x; const dy = p2.y - p1.y;
-        const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW;
-        const t = ((u.x - p1.x)*nx + (u.y - p1.y)*ny);
-        let cx, cy;
-        if(t < 0) { cx = p1.x; cy = p1.y; } else if(t > lenW) { cx = p2.x; cy = p2.y; } else { cx = p1.x + t*nx; cy = p1.y + t*ny; }
-        return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
-    }
-
-    // --- НОВЫЙ МЕТОД ПРИЦЕЛА: СИМУЛЯЦИЯ ---
     predictHit(u, vec) {
-        // Создаем "призрака" для симуляции
-        let sim = { 
-            x: u.x, 
-            y: u.y, 
-            vx: 0, 
-            vy: 0, 
-            radius: CFG.radius,
-            team: u.team
-        };
-        
-        // Начальная скорость
+        let sim = { x: u.x, y: u.y, vx: 0, vy: 0, radius: CFG.radius, team: u.team };
         const dir = V.norm(vec);
-        sim.vx = dir.x * CFG.launchSpeed;
-        sim.vy = dir.y * CFG.launchSpeed;
-
-        const maxSteps = 400; // Сколько кадров симулируем (ограничиваем дальность луча)
-        
-        // Переменные для отрисовки второго сегмента (отскока)
+        sim.vx = dir.x * CFG.launchSpeed; sim.vy = dir.y * CFG.launchSpeed;
+        const maxSteps = 400;
         let hitPoint = null;
-        let bounceEnd = null;
 
         for (let i = 0; i < maxSteps; i++) {
-            // 1. Двигаем призрака (упрощенная физика без трения, чтобы луч был прямой)
-            sim.x += sim.vx / CFG.subSteps;
-            sim.y += sim.vy / CFG.subSteps;
+            sim.x += sim.vx / CFG.subSteps; sim.y += sim.vy / CFG.subSteps;
+            let hit = false; let nx = 0, ny = 0;
 
-            // 2. Проверяем столкновения
-            let hit = false;
-            let nx = 0, ny = 0; // Нормаль столкновения
-
-            // СТЕНЫ
             for (let w of this.walls) {
                 const dist = this.getDistToLine(sim, w.p1, w.p2);
                 if (dist < CFG.radius) {
-                    // Расчет нормали стены (как в solveWall)
                     const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
                     const lenW = Math.sqrt(dx*dx + dy*dy); 
                     const t = ((sim.x - w.p1.x)*(dx/lenW) + (sim.y - w.p1.y)*(dy/lenW));
                     let cx = w.p1.x + t*(dx/lenW); let cy = w.p1.y + t*(dy/lenW); 
                     if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
-                    
-                    nx = (sim.x - cx) / dist;
-                    ny = (sim.y - cy) / dist;
-                    hit = true;
-                    break;
+                    nx = (sim.x - cx) / dist; ny = (sim.y - cy) / dist;
+                    hit = true; break;
                 }
             }
 
-            // ЮНИТЫ (Если не ударились об стену)
             if (!hit) {
                 for (let other of this.units) {
                     if (other.id === u.id) continue;
                     const dist = Math.sqrt((sim.x - other.x)**2 + (sim.y - other.y)**2);
                     if (dist < CFG.radius * 2) {
-                        nx = (sim.x - other.x) / dist;
-                        ny = (sim.y - other.y) / dist;
+                        nx = (sim.x - other.x) / dist; ny = (sim.y - other.y) / dist;
                         hit = true;
-                        // Если ударили врага - останавливаем луч (показываем удар)
                         if (other.team !== u.team) {
-                            return { 
-                                type: 'unit', 
-                                x: sim.x, y: sim.y, 
-                                rx: 0, ry: 0, 
-                                enemy: other 
-                            };
+                            return { type: 'unit', x: sim.x, y: sim.y, rx: 0, ry: 0, enemy: other };
                         }
                         break;
                     }
                 }
             }
 
-            // 3. ЕСЛИ БЫЛ УДАР (Стена или Союзник)
             if (hit) {
                 hitPoint = { x: sim.x, y: sim.y };
-                
-                // Рассчитываем вектор отражения
-                // Vnew = V - 2 * (V . N) * N
                 const dp = sim.vx * nx + sim.vy * ny;
-                sim.vx = (sim.vx - 2 * dp * nx);
-                sim.vy = (sim.vy - 2 * dp * ny);
-                
-                // Нормализуем для отрисовки короткого "хвоста"
+                sim.vx = (sim.vx - 2 * dp * nx); sim.vy = (sim.vy - 2 * dp * ny);
                 const len = Math.sqrt(sim.vx*sim.vx + sim.vy*sim.vy);
                 const rDir = { x: sim.vx/len, y: sim.vy/len };
-
-                return {
-                    type: 'wall', // Или союзник, логика отскока та же
-                    x: hitPoint.x, 
-                    y: hitPoint.y,
-                    rx: rDir.x, 
-                    ry: rDir.y
-                };
+                return { type: 'wall', x: hitPoint.x, y: hitPoint.y, rx: rDir.x, ry: rDir.y };
             }
         }
-
-        // Если ничего не задели
         return { type: 'none', x: sim.x, y: sim.y };
     }
 
-    drawAim() {
-        const u = this.units[this.drag.unitId];
-        const vec = V.sub(this.drag.start, this.drag.curr);
-        
-        // Используем новую функцию симуляции
+    // --- ОБНОВЛЕННАЯ ОТРИСОВКА ПРИЦЕЛА (ПОДДЕРЖИВАЕТ ВРАГА) ---
+    drawAim(u, vec, isEnemy) {
+        if (!u || u.isDead) return;
+
         const hit = this.predictHit(u, vec);
         
-        // Рисуем первую линию (от центра героя до точки удара)
+        // Настройка стиля: если враг - прозрачный красный/зеленый, если я - яркий
+        this.ctx.globalAlpha = isEnemy ? 0.4 : 1.0; 
+        
         this.ctx.beginPath(); 
         this.ctx.moveTo(u.x, u.y); 
         this.ctx.lineTo(hit.x, hit.y);
         this.ctx.lineWidth = 6; 
-        this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        this.ctx.strokeStyle = isEnemy ? '#fff' : 'rgba(255,255,255,0.7)';
         this.ctx.setLineDash([15,10]); 
         this.ctx.stroke(); 
         this.ctx.setLineDash([]);
 
-        // Рисуем точку удара
         if(hit.type !== 'none') {
-            this.ctx.beginPath(); 
-            this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
-            this.ctx.fillStyle = '#fff'; 
-            this.ctx.fill();
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
+            this.ctx.fillStyle = '#fff'; this.ctx.fill();
         }
 
-        // Рисуем отскок (если есть вектор отражения rx, ry)
         if(hit.rx && hit.ry) {
-            const bounceLen = 100; // Длина "хвоста"
+            const bounceLen = 100; 
             this.ctx.beginPath(); 
             this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
@@ -821,7 +754,6 @@ class Game {
             this.ctx.stroke();
         }
         
-        // Рисуем маркер урона, если попали во врага
         if(hit.enemy) {
             const en = hit.enemy; 
             this.ctx.save(); 
@@ -837,6 +769,8 @@ class Game {
             this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
+
+        this.ctx.globalAlpha = 1.0; // Сброс прозрачности
     }
 
     updateBanner(txt, type) {
