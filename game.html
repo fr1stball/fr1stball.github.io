@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
-    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -78,15 +77,13 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
-        /* ОТЛАДОЧНАЯ КОНСОЛЬ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
             background: rgba(0,0,0,0.5); color: #0f0; 
             font-family: monospace; font-size: 12px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; 
-            z-index: 9999;
+            display: none; z-index: 9999;
         }
     </style>
 </head>
@@ -109,7 +106,6 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -123,7 +119,6 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
-// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
