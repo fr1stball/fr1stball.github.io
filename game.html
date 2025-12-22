@@ -78,13 +78,15 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
+        /* ОТЛАДОЧНАЯ КОНСОЛЬ */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
             width: 100%; height: 100px; 
             background: rgba(0,0,0,0.5); color: #0f0; 
             font-family: monospace; font-size: 12px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; z-index: 9999;
+            display: none; 
+            z-index: 9999;
         }
     </style>
 </head>
@@ -93,7 +95,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выход</a>
+        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -107,6 +109,7 @@
 </div>
 
 <script>
+// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -120,6 +123,7 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
+// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -777,7 +781,6 @@ class Game {
         setTimeout(()=>el.remove(), 1200);
     }
     
-    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ---
     initArena() {
         const pad = CFG.wallPadding; 
         const c = CFG.cornerCut; 
@@ -795,7 +798,6 @@ class Game {
         }
     }
     
-    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ОТРИСОВКИ ФОНА ---
     drawBackground() {
         const ctx = this.ctx;
         if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
