@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
+    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -92,7 +93,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выход</a>
+        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -189,9 +190,7 @@ class Game {
         this.isOnline = true; this.roomName = null; this.myTeam = null; 
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
-        
-        // Данные прицела врага
-        this.enemyDrag = null; // { unitId, start, curr }
+        this.enemyDrag = null;
 
         this.lastTime = performance.now();
         this.accumulator = 0;
@@ -210,6 +209,24 @@ class Game {
         this.bindInput();
         this.setupNetwork(); 
         this.startBackgroundLoop();
+    }
+
+    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ---
+    initArena() {
+        const pad = CFG.wallPadding;
+        const c = CFG.cornerCut;
+        const w = CFG.width;
+        const h = CFG.height;
+        const points = [
+            {x: pad + c, y: pad}, {x: w - pad - c, y: pad},
+            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c},
+            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad},
+            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
+        ];
+        this.walls = [];
+        for(let i=0; i<points.length; i++) {
+            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
+        }
     }
 
     startBackgroundLoop() {
@@ -295,7 +312,6 @@ class Game {
         });
 
         socket.on('enemyShoot', (data) => {
-            // Очищаем прицел врага, так как он выстрелил
             this.enemyDrag = null;
             this.shoot(data.unitId, data.vector, true);
         });
@@ -316,10 +332,8 @@ class Game {
             this.nextTurnIndex();
         });
         
-        // --- ПРИЦЕЛ ВРАГА ---
         socket.on('enemyAim', (data) => {
-            // Сохраняем данные прицеливания врага
-            this.enemyDrag = data; // { unitId, vec }
+            this.enemyDrag = data;
         });
 
         socket.on('enemyEndAim', () => {
@@ -386,9 +400,7 @@ class Game {
     getActiveUnit() { return this.units[this.activeUnitId]; }
 
     startTurnLogic() {
-        // Очищаем прицелы
         this.enemyDrag = null; 
-        
         const scheduledUnitId = this.turnOrder[this.turnStep % 4];
         let scheduledUnit = this.units[scheduledUnitId];
         if (scheduledUnit.isDead) {
@@ -449,9 +461,7 @@ class Game {
     }
 
     bindInput() {
-        // Тайм-аут отправки данных (чтобы не спамить)
         let lastSendTime = 0;
-
         const onDown = (e) => {
             if (this.state !== 'AIMING') return;
             if (!this.canControl) return;
@@ -466,34 +476,25 @@ class Game {
         const onMove = (e) => { 
             if (this.drag.active) {
                 this.drag.curr = this.getMousePos(e);
-                
-                // Отправляем данные на сервер не чаще 30мс
                 const now = Date.now();
                 if (now - lastSendTime > 30) {
                     const vec = V.sub(this.drag.start, this.drag.curr);
-                    // Отправляем вектор
-                    socket.emit('aim', {
-                        room: this.roomName,
-                        unitId: this.drag.unitId,
-                        vec: vec
-                    });
+                    socket.emit('aim', { room: this.roomName, unitId: this.drag.unitId, vec: vec });
                     lastSendTime = now;
                 }
             }
         };
         const onUp = (e) => {
             if (this.drag.active) {
-                // Если нажали ПКМ - отмена
                 if (e.button === 2) { 
                     this.drag.active = false; 
                     socket.emit('endAim', { room: this.roomName });
                     return; 
                 }
-                
                 this.drag.active = false;
                 const vec = V.sub(this.drag.start, this.drag.curr);
                 if (V.mag(vec) > 10) this.shoot(this.drag.unitId, vec);
-                else socket.emit('endAim', { room: this.roomName }); // Если просто кликнули без тяги
+                else socket.emit('endAim', { room: this.roomName });
             }
         };
         this.canvas.addEventListener('contextmenu', e => { e.preventDefault(); this.drag.active = false; socket.emit('endAim', { room: this.roomName }); });
@@ -539,16 +540,10 @@ class Game {
         }
 
         if (this.state === 'AIMING') {
-            // Рисуем свой прицел
             if (this.drag.active) this.drawAim(this.units[this.drag.unitId], V.sub(this.drag.start, this.drag.curr), false);
-            
-            // Рисуем прицел врага
             if (this.enemyDrag) {
-                // this.enemyDrag.vec - это вектор
                 const u = this.units[this.enemyDrag.unitId];
-                if (u && !u.isDead) {
-                    this.drawAim(u, this.enemyDrag.vec, true);
-                }
+                if (u && !u.isDead) this.drawAim(u, this.enemyDrag.vec, true);
             }
         }
 
@@ -722,55 +717,36 @@ class Game {
         return { type: 'none', x: sim.x, y: sim.y };
     }
 
-    // --- ОБНОВЛЕННАЯ ОТРИСОВКА ПРИЦЕЛА (ПОДДЕРЖИВАЕТ ВРАГА) ---
     drawAim(u, vec, isEnemy) {
         if (!u || u.isDead) return;
 
         const hit = this.predictHit(u, vec);
         
-        // Настройка стиля: если враг - прозрачный красный/зеленый, если я - яркий
         this.ctx.globalAlpha = isEnemy ? 0.4 : 1.0; 
-        
-        this.ctx.beginPath(); 
-        this.ctx.moveTo(u.x, u.y); 
-        this.ctx.lineTo(hit.x, hit.y);
-        this.ctx.lineWidth = 6; 
-        this.ctx.strokeStyle = isEnemy ? '#fff' : 'rgba(255,255,255,0.7)';
-        this.ctx.setLineDash([15,10]); 
-        this.ctx.stroke(); 
-        this.ctx.setLineDash([]);
+        this.ctx.beginPath(); this.ctx.moveTo(u.x, u.y); this.ctx.lineTo(hit.x, hit.y);
+        this.ctx.lineWidth = 6; this.ctx.strokeStyle = isEnemy ? '#fff' : 'rgba(255,255,255,0.7)';
+        this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
 
         if(hit.type !== 'none') {
-            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
-            this.ctx.fillStyle = '#fff'; this.ctx.fill();
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); this.ctx.fillStyle = '#fff'; this.ctx.fill();
         }
 
         if(hit.rx && hit.ry) {
             const bounceLen = 100; 
-            this.ctx.beginPath(); 
-            this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; 
-            this.ctx.stroke();
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; this.ctx.stroke();
         }
         
         if(hit.enemy) {
-            const en = hit.enemy; 
-            this.ctx.save(); 
-            this.ctx.translate(en.x, en.y - 65);
-            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; 
-            this.ctx.fillRect(-40, -30, 80, 40);
-            this.ctx.strokeStyle = 'white'; 
-            this.ctx.lineWidth = 2; 
-            this.ctx.strokeRect(-40, -30, 80, 40);
-            this.ctx.fillStyle = '#ff5555'; 
-            this.ctx.font = 'bold 24px Arial';
-            this.ctx.textAlign = 'center'; 
-            this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            const en = hit.enemy; this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
-
-        this.ctx.globalAlpha = 1.0; // Сброс прозрачности
+        this.ctx.globalAlpha = 1.0;
     }
 
     updateBanner(txt, type) {
