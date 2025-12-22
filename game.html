@@ -107,6 +107,7 @@
 </div>
 
 <script>
+// --- ЛОГГЕР ОШИБОК ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -120,6 +121,7 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
+// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -145,6 +147,7 @@ ASSETS.bear.src = 'img/bear.png';
 ASSETS.wolf.src = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
+// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Key = urlParams.get('p1');
@@ -199,23 +202,28 @@ class Game {
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
 
+        // Это нужно для плавной работы при возвращении на вкладку
         document.addEventListener("visibilitychange", () => {
             if (!document.hidden) {
                 this.lastTime = performance.now(); 
             }
         });
 
+        // 1. Создаем арену
         this.initArena();
+        // 2. Биндим управление
         this.bindInput();
+        // 3. Подключаемся к сети
         this.setupNetwork(); 
+        // 4. Запускаем фоновый цикл (Worker)
         this.startBackgroundLoop();
     }
 
-    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ---
+    // --- ФУНКЦИЯ СОЗДАНИЯ АРЕНЫ (БЫЛА ПРОПУЩЕНА) ---
     initArena() {
-        const pad = CFG.wallPadding;
-        const c = CFG.cornerCut;
-        const w = CFG.width;
+        const pad = CFG.wallPadding; 
+        const c = CFG.cornerCut; 
+        const w = CFG.width; 
         const h = CFG.height;
         const points = [
             {x: pad + c, y: pad}, {x: w - pad - c, y: pad},
@@ -235,6 +243,7 @@ class Game {
             self.onmessage = function(e) {
                 if (e.data === 'start') {
                     if (interval) clearInterval(interval);
+                    // 16ms = ~60 FPS
                     interval = setInterval(() => {
                         self.postMessage('tick');
                     }, 16);
@@ -728,22 +737,32 @@ class Game {
         this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
 
         if(hit.type !== 'none') {
-            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); this.ctx.fillStyle = '#fff'; this.ctx.fill();
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
+            this.ctx.fillStyle = '#fff'; this.ctx.fill();
         }
 
         if(hit.rx && hit.ry) {
             const bounceLen = 100; 
-            this.ctx.beginPath(); this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.beginPath(); 
+            this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; this.ctx.stroke();
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; 
+            this.ctx.stroke();
         }
         
         if(hit.enemy) {
-            const en = hit.enemy; this.ctx.save(); this.ctx.translate(en.x, en.y - 65);
-            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; this.ctx.fillRect(-40, -30, 80, 40);
-            this.ctx.strokeStyle = 'white'; this.ctx.lineWidth = 2; this.ctx.strokeRect(-40, -30, 80, 40);
-            this.ctx.fillStyle = '#ff5555'; this.ctx.font = 'bold 24px Arial';
-            this.ctx.textAlign = 'center'; this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            const en = hit.enemy; 
+            this.ctx.save(); 
+            this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; 
+            this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white'; 
+            this.ctx.lineWidth = 2; 
+            this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555'; 
+            this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center'; 
+            this.ctx.fillText(`-${u.dmg}`, 0, -2);
             this.ctx.restore();
         }
         this.ctx.globalAlpha = 1.0;
