@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
-    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -107,7 +106,6 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -121,7 +119,6 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
-// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -542,6 +539,7 @@ class Game {
             const dp = u.vx * nxColl + u.vy * nyColl;
             u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
             u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
+            
             if (u.isDead && Math.abs(dp) > 2 && u.lastHitByTeam === u.team) { 
                 this.heal(u, CFG.reviveAmount); 
             }
@@ -687,57 +685,117 @@ class Game {
         return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
     }
 
-    // --- УЛУЧШЕННЫЙ ПРИЦЕЛ (С малым шагом и без пропуска мертвых) ---
+    // --- НОВЫЙ МЕТОД ПРИЦЕЛА: СИМУЛЯЦИЯ ---
     predictHit(u, vec) {
-        // Симуляция траектории (маленький шаг для точности)
-        const dir = V.norm(vec); 
-        let simX = u.x; 
-        let simY = u.y; 
-        const step = 4; // Шаг 4 пикселя (соответствует скорости физики 4.5)
-        const maxDist = 2000;
+        // Создаем "призрака" для симуляции
+        let sim = { 
+            x: u.x, 
+            y: u.y, 
+            vx: 0, 
+            vy: 0, 
+            radius: CFG.radius,
+            team: u.team
+        };
+        
+        // Начальная скорость
+        const dir = V.norm(vec);
+        sim.vx = dir.x * CFG.launchSpeed;
+        sim.vy = dir.y * CFG.launchSpeed;
 
-        for(let d=0; d<maxDist; d+=step) {
-            simX += dir.x * step; 
-            simY += dir.y * step;
-            
-            // Стены
-            for(let w of this.walls) {
-                const dist = this.getDistToLine({x: simX, y: simY}, w.p1, w.p2);
-                if(dist < CFG.radius) {
+        const maxSteps = 400; // Сколько кадров симулируем (ограничиваем дальность луча)
+        
+        // Переменные для отрисовки второго сегмента (отскока)
+        let hitPoint = null;
+        let bounceEnd = null;
+
+        for (let i = 0; i < maxSteps; i++) {
+            // 1. Двигаем призрака (упрощенная физика без трения, чтобы луч был прямой)
+            sim.x += sim.vx / CFG.subSteps;
+            sim.y += sim.vy / CFG.subSteps;
+
+            // 2. Проверяем столкновения
+            let hit = false;
+            let nx = 0, ny = 0; // Нормаль столкновения
+
+            // СТЕНЫ
+            for (let w of this.walls) {
+                const dist = this.getDistToLine(sim, w.p1, w.p2);
+                if (dist < CFG.radius) {
+                    // Расчет нормали стены (как в solveWall)
                     const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
-                    const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW; 
-                    const wnx = -ny; const wny = nx; const dot = dir.x*wnx + dir.y*wny;
-                    return { type: 'wall', x: simX, y: simY, rx: dir.x - 2*dot*wnx, ry: dir.y - 2*dot*wny };
+                    const lenW = Math.sqrt(dx*dx + dy*dy); 
+                    const t = ((sim.x - w.p1.x)*(dx/lenW) + (sim.y - w.p1.y)*(dy/lenW));
+                    let cx = w.p1.x + t*(dx/lenW); let cy = w.p1.y + t*(dy/lenW); 
+                    if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
+                    
+                    nx = (sim.x - cx) / dist;
+                    ny = (sim.y - cy) / dist;
+                    hit = true;
+                    break;
                 }
             }
-            // Юниты (теперь и мертвые!)
-            for(let other of this.units) {
-                if(other.id === u.id) continue;
-                const dist = Math.sqrt((simX - other.x)**2 + (simY - other.y)**2);
-                if(dist < CFG.radius * 2) {
-                    // Рассчитываем примерный отскок
-                    let nx = simX - other.x; let ny = simY - other.y;
-                    const ln = Math.sqrt(nx*nx + ny*ny); nx/=ln; ny/=ln;
-                    const dot = dir.x*nx + dir.y*ny;
-                    // Возвращаем точку удара
-                    return { type: 'unit', x: simX, y: simY, rx: dir.x - 2*dot*nx, ry: dir.y - 2*dot*ny, enemy: other };
+
+            // ЮНИТЫ (Если не ударились об стену)
+            if (!hit) {
+                for (let other of this.units) {
+                    if (other.id === u.id) continue;
+                    const dist = Math.sqrt((sim.x - other.x)**2 + (sim.y - other.y)**2);
+                    if (dist < CFG.radius * 2) {
+                        nx = (sim.x - other.x) / dist;
+                        ny = (sim.y - other.y) / dist;
+                        hit = true;
+                        // Если ударили врага - останавливаем луч (показываем удар)
+                        if (other.team !== u.team) {
+                            return { 
+                                type: 'unit', 
+                                x: sim.x, y: sim.y, 
+                                rx: 0, ry: 0, 
+                                enemy: other 
+                            };
+                        }
+                        break;
+                    }
                 }
+            }
+
+            // 3. ЕСЛИ БЫЛ УДАР (Стена или Союзник)
+            if (hit) {
+                hitPoint = { x: sim.x, y: sim.y };
+                
+                // Рассчитываем вектор отражения
+                // Vnew = V - 2 * (V . N) * N
+                const dp = sim.vx * nx + sim.vy * ny;
+                sim.vx = (sim.vx - 2 * dp * nx);
+                sim.vy = (sim.vy - 2 * dp * ny);
+                
+                // Нормализуем для отрисовки короткого "хвоста"
+                const len = Math.sqrt(sim.vx*sim.vx + sim.vy*sim.vy);
+                const rDir = { x: sim.vx/len, y: sim.vy/len };
+
+                return {
+                    type: 'wall', // Или союзник, логика отскока та же
+                    x: hitPoint.x, 
+                    y: hitPoint.y,
+                    rx: rDir.x, 
+                    ry: rDir.y
+                };
             }
         }
-        return { type: 'none', x: simX, y: simY };
+
+        // Если ничего не задели
+        return { type: 'none', x: sim.x, y: sim.y };
     }
 
     drawAim() {
         const u = this.units[this.drag.unitId];
         const vec = V.sub(this.drag.start, this.drag.curr);
+        
+        // Используем новую функцию симуляции
         const hit = this.predictHit(u, vec);
         
-        // Луч строго из центра
-        const startX = u.x; 
-        const startY = u.y;
-
+        // Рисуем первую линию (от центра героя до точки удара)
         this.ctx.beginPath(); 
-        this.ctx.moveTo(startX, startY); 
+        this.ctx.moveTo(u.x, u.y); 
         this.ctx.lineTo(hit.x, hit.y);
         this.ctx.lineWidth = 6; 
         this.ctx.strokeStyle = 'rgba(255,255,255,0.7)';
@@ -745,13 +803,17 @@ class Game {
         this.ctx.stroke(); 
         this.ctx.setLineDash([]);
 
-        if(hit.type !== 'none' && hit.rx) {
+        // Рисуем точку удара
+        if(hit.type !== 'none') {
             this.ctx.beginPath(); 
             this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
             this.ctx.fillStyle = '#fff'; 
             this.ctx.fill();
-            
-            const bounceLen = 50; 
+        }
+
+        // Рисуем отскок (если есть вектор отражения rx, ry)
+        if(hit.rx && hit.ry) {
+            const bounceLen = 100; // Длина "хвоста"
             this.ctx.beginPath(); 
             this.ctx.moveTo(hit.x, hit.y);
             this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
@@ -759,6 +821,7 @@ class Game {
             this.ctx.stroke();
         }
         
+        // Рисуем маркер урона, если попали во врага
         if(hit.enemy) {
             const en = hit.enemy; 
             this.ctx.save(); 
