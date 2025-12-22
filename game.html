@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Лесная Битва: Бой</title>
+    <!-- ПОДКЛЮЧЕНИЕ SOCKET.IO -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@700&display=swap');
@@ -190,26 +191,32 @@ class Game {
         this.canControl = false; this.isLoggedIn = false;
         this.isSimulating = false;
 
+        this.lastTime = performance.now();
+        this.accumulator = 0;
+        this.step = 1 / 60;
+
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                this.lastTime = performance.now(); 
+            }
+        });
 
         this.initArena();
         this.bindInput();
         this.setupNetwork(); 
         
-        // ЗАПУСК ЧЕРЕЗ WEB WORKER (Фоновый режим)
         this.startBackgroundLoop();
     }
 
-    // --- НОВАЯ СИСТЕМА ЦИКЛА (WEB WORKER) ---
     startBackgroundLoop() {
-        // Создаем воркер прямо из строки кода
         const workerCode = `
             let interval = null;
             self.onmessage = function(e) {
                 if (e.data === 'start') {
                     if (interval) clearInterval(interval);
-                    // 60 FPS = 1000 / 60 ≈ 16.6ms
                     interval = setInterval(() => {
                         self.postMessage('tick');
                     }, 16);
@@ -218,17 +225,10 @@ class Game {
                 }
             };
         `;
-        
         const blob = new Blob([workerCode], { type: 'application/javascript' });
         const workerUrl = URL.createObjectURL(blob);
         this.ticker = new Worker(workerUrl);
-
-        // Когда воркер тикает, мы обновляем игру
-        this.ticker.onmessage = () => {
-            this.loop();
-        };
-
-        // Запускаем
+        this.ticker.onmessage = () => { this.loop(); };
         this.ticker.postMessage('start');
     }
 
@@ -365,7 +365,8 @@ class Game {
         this.units.push({
             id: this.units.length, team: team, name: safeStats.name, imgKey: safeKey, emoji: safeStats.emoji,
             x: x, y: y, vx: 0, vy: 0, hp: safeStats.hp, maxHp: safeStats.hp, dmg: safeStats.dmg,
-            isDead: false, reviveCount: 0
+            isDead: false, reviveCount: 0,
+            lastHitByTeam: null // Кем был ударен последний раз
         });
     }
 
@@ -401,13 +402,10 @@ class Game {
         this.stopTimer();
         this.turnTime = CFG.turnTimeSeconds;
         this.updateTimerUI();
-        
         const endTime = Date.now() + CFG.turnTimeSeconds * 1000;
-
         this.timerInterval = setInterval(() => {
             const now = Date.now();
             const left = Math.ceil((endTime - now) / 1000);
-
             if (left <= 0) {
                 this.stopTimer();
                 this.updateTimerUI(0);
@@ -466,6 +464,11 @@ class Game {
 
     shoot(id, rawVec, isNetwork = false) {
         this.stopTimer();
+        
+        // СБРОС ДАННЫХ ПЕРЕД ВЫСТРЕЛОМ
+        // Чтобы старые удары не влияли на новое воскрешение
+        this.units.forEach(u => u.lastHitByTeam = null);
+
         if (!isNetwork && this.isOnline) {
             socket.emit('shoot', { room: this.roomName, unitId: id, vector: rawVec });
         }
@@ -478,11 +481,23 @@ class Game {
         this.updateBanner('Движение...', 'grey');
     }
 
-    // --- ОСНОВНОЙ ЦИКЛ (Вызывается воркером 60 раз в сек) ---
     loop() {
-        this.update();
         this.ctx.clearRect(0,0, CFG.width, CFG.height);
         this.drawBackground();
+
+        const now = performance.now();
+        let dt = (now - this.lastTime) / 1000;
+        this.lastTime = now;
+        if (dt > 1) dt = 1; 
+        this.accumulator += dt;
+        let safetyCounter = 0;
+        while (this.accumulator >= this.step) {
+            this.update();
+            this.accumulator -= this.step;
+            safetyCounter++;
+            if(safetyCounter > 3000) { this.accumulator = 0; break; }
+        }
+
         if (this.state === 'AIMING' && this.drag.active) this.drawAim();
         this.units.forEach(u => this.drawUnit(u));
     }
@@ -529,7 +544,12 @@ class Game {
             const dp = u.vx * nxColl + u.vy * nyColl;
             u.vx = (u.vx - 2 * dp * nxColl) * CFG.wallBounce;
             u.vy = (u.vy - 2 * dp * nyColl) * CFG.wallBounce;
-            if (u.isDead && Math.abs(dp) > 2) { this.heal(u, CFG.reviveAmount); }
+            
+            // --- ЛОГИКА ВОСКРЕШЕНИЯ ОБ СТЕНУ ---
+            // Если мертв И удар был сильным И ударил союзник
+            if (u.isDead && Math.abs(dp) > 2 && u.lastHitByTeam === u.team) { 
+                this.heal(u, CFG.reviveAmount); 
+            }
         }
     }
 
@@ -546,7 +566,12 @@ class Game {
             u1.vx -= impulse * nx; u1.vy -= impulse * ny;
             u2.vx += impulse * nx; u2.vy += impulse * ny;
             const impact = Math.abs(impulse);
+            
             if (impact > 0.1) {
+                // --- ЗАПИСЫВАЕМ КТО КОГО УДАРИЛ ---
+                u1.lastHitByTeam = u2.team;
+                u2.lastHitByTeam = u1.team;
+
                 if (u1.team === u2.team) {
                     if (u1.isDead) this.heal(u1, CFG.reviveAmount);
                     if (u2.isDead) this.heal(u2, CFG.reviveAmount);
@@ -668,6 +693,7 @@ class Game {
         return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
     }
 
+    // --- УЛУЧШЕННЫЙ RAYCAST (ВИДИТ МЕРТВЫХ) ---
     predictHit(u, vec) {
         const maxDist = 2500; const dir = V.norm(vec); let cx = u.x; let cy = u.y; const step = 10;
         for(let d=0; d<maxDist; d+=step) {
@@ -682,7 +708,9 @@ class Game {
                 }
             }
             for(let other of this.units) {
-                if(other.id === u.id || other.isDead) continue;
+                // ТЕПЕРЬ ЛУЧ ВИДИТ И МЕРТВЫХ (Убрана проверка !other.isDead)
+                if(other.id === u.id) continue;
+                
                 const dist = Math.sqrt((cx - other.x)**2 + (cy - other.y)**2);
                 if(dist < CFG.radius * 2) {
                     let nx = cx - other.x; let ny = cy - other.y;
