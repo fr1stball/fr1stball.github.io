@@ -93,7 +93,7 @@
 <div id="game-container">
     <canvas id="arena"></canvas>
     <div class="ui-layer">
-        <a href="lobby.html" class="back-btn">⬅ Выбор героев</a>
+        <a href="lobby.html" class="back-btn">⬅ Выход</a>
         <div id="turn-display" class="turn-badge green">Подключение...</div>
         <div id="timer-display">30</div>
 
@@ -107,7 +107,6 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ОШИБОК ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
@@ -121,7 +120,6 @@ window.onerror = function(message, source, lineno) {
     log(`ERROR: ${message} at line ${lineno}`);
 };
 
-// --- КОНФИГУРАЦИЯ ---
 const CFG = {
     width: 1600, height: 900,
     wallPadding: 145, cornerCut: 210,   
@@ -147,7 +145,6 @@ ASSETS.bear.src = 'img/bear.png';
 ASSETS.wolf.src = 'img/wolf.png';
 ASSETS.poacher.src = 'img/poacher.png';
 
-// --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА ---
 const urlParams = new URLSearchParams(window.location.search);
 const myUsername = urlParams.get('username') || "Player";
 const p1Key = urlParams.get('p1');
@@ -202,39 +199,16 @@ class Game {
         this.fitScreen();
         window.addEventListener('resize', () => this.fitScreen());
 
-        // Это нужно для плавной работы при возвращении на вкладку
         document.addEventListener("visibilitychange", () => {
             if (!document.hidden) {
                 this.lastTime = performance.now(); 
             }
         });
 
-        // 1. Создаем арену
         this.initArena();
-        // 2. Биндим управление
         this.bindInput();
-        // 3. Подключаемся к сети
         this.setupNetwork(); 
-        // 4. Запускаем фоновый цикл (Worker)
         this.startBackgroundLoop();
-    }
-
-    // --- ФУНКЦИЯ СОЗДАНИЯ АРЕНЫ (БЫЛА ПРОПУЩЕНА) ---
-    initArena() {
-        const pad = CFG.wallPadding; 
-        const c = CFG.cornerCut; 
-        const w = CFG.width; 
-        const h = CFG.height;
-        const points = [
-            {x: pad + c, y: pad}, {x: w - pad - c, y: pad},
-            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c},
-            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad},
-            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
-        ];
-        this.walls = [];
-        for(let i=0; i<points.length; i++) {
-            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
-        }
     }
 
     startBackgroundLoop() {
@@ -243,7 +217,6 @@ class Game {
             self.onmessage = function(e) {
                 if (e.data === 'start') {
                     if (interval) clearInterval(interval);
-                    // 16ms = ~60 FPS
                     interval = setInterval(() => {
                         self.postMessage('tick');
                     }, 16);
@@ -802,6 +775,41 @@ class Game {
         el.style.color = col; el.innerText = txt;
         wrapper.appendChild(el);
         setTimeout(()=>el.remove(), 1200);
+    }
+    
+    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ---
+    initArena() {
+        const pad = CFG.wallPadding; 
+        const c = CFG.cornerCut; 
+        const w = CFG.width; 
+        const h = CFG.height;
+        const points = [
+            {x: pad + c, y: pad}, {x: w - pad - c, y: pad},
+            {x: w - pad, y: pad + c}, {x: w - pad, y: h - pad - c},
+            {x: w - pad - c, y: h - pad}, {x: pad + c, y: h - pad},
+            {x: pad, y: h - pad - c}, {x: pad, y: pad + c}
+        ];
+        this.walls = [];
+        for(let i=0; i<points.length; i++) {
+            this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
+        }
+    }
+    
+    // --- ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ОТРИСОВКИ ФОНА ---
+    drawBackground() {
+        const ctx = this.ctx;
+        if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
+            ctx.drawImage(ASSETS.bg, 0, 0, CFG.width, CFG.height);
+        } else {
+            ctx.fillStyle = '#2d5a27'; ctx.fillRect(0,0, CFG.width, CFG.height);
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 10;
+            ctx.beginPath(); ctx.moveTo(CFG.width/2, 0); ctx.lineTo(CFG.width/2, CFG.height); ctx.stroke();
+            ctx.beginPath(); ctx.arc(CFG.width/2, CFG.height/2, 150, 0, Math.PI*2); ctx.stroke();
+            ctx.strokeStyle = '#1e3c1b'; ctx.lineWidth = 5;
+            ctx.beginPath();
+            this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
+            ctx.stroke();
+        }
     }
 }
 
