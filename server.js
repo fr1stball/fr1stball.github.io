@@ -5,7 +5,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Forest Server v3 Running'));
+app.get('/', (req, res) => res.send('Forest Server v4 (Aim Sync) Running'));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -25,7 +25,7 @@ io.on('connection', (socket) => {
             username: username || "Player",
             socket: socket,
             heroes: null,
-            currentRoom: null // Запоминаем комнату
+            currentRoom: null
         };
         socket.emit('loginSuccess', { username: players[socket.id].username });
     });
@@ -36,17 +36,22 @@ io.on('connection', (socket) => {
             socket.emit('loginSuccess', { username: "Guest" });
             return;
         }
-        
         player.heroes = heroData;
-
-        // Если уже в очереди - не дублируем
         if (matchmakingQueue.find(p => p.id === socket.id)) return;
-
         matchmakingQueue.push(player);
-        console.log(`[QUEUE] + ${player.username}`);
-
         tryMatchmaking();
     });
+
+    // --- СИНХРОНИЗАЦИЯ ПРИЦЕЛА ---
+    socket.on('aim', (data) => {
+        // data: { room, unitId, vec }
+        socket.to(data.room).emit('enemyAim', data);
+    });
+
+    socket.on('endAim', (data) => {
+        socket.to(data.room).emit('enemyEndAim');
+    });
+    // ------------------------------
 
     socket.on('shoot', (data) => {
         socket.to(data.room).emit('enemyShoot', data);
@@ -56,19 +61,11 @@ io.on('connection', (socket) => {
         socket.to(data.room).emit('syncData', data.units);
     });
 
-    // --- ОБРАБОТКА ВЫХОДА ---
     socket.on('disconnect', () => {
-        console.log(`[DISCONNECT] ${socket.id}`);
-        
         const player = players[socket.id];
-        
-        // 1. Если игрок был в активной игре
         if (player && player.currentRoom) {
-            // Сообщаем сопернику в этой комнате, что игра окончена
             socket.to(player.currentRoom).emit('opponentLeft');
         }
-
-        // 2. Удаляем из памяти
         delete players[socket.id];
         matchmakingQueue = matchmakingQueue.filter(p => p.id !== socket.id);
     });
@@ -86,24 +83,13 @@ function tryMatchmaking() {
         }
 
         const roomName = `battle_${p1.id}_${p2.id}`;
-        
-        // Подключаем к комнате Socket.IO
         p1.socket.join(roomName);
         p2.socket.join(roomName);
-
-        // Запоминаем комнату в объекте игрока (для дисконнекта)
         p1.currentRoom = roomName;
         p2.currentRoom = roomName;
 
-        console.log(`[START] ${p1.username} vs ${p2.username}`);
-
-        io.to(p1.id).emit('gameStart', { 
-            room: roomName, role: 'green', opponent: p2.username, enemyHeroes: p2.heroes 
-        });
-
-        io.to(p2.id).emit('gameStart', { 
-            room: roomName, role: 'red', opponent: p1.username, enemyHeroes: p1.heroes
-        });
+        io.to(p1.id).emit('gameStart', { room: roomName, role: 'green', opponent: p2.username, enemyHeroes: p2.heroes });
+        io.to(p2.id).emit('gameStart', { room: roomName, role: 'red', opponent: p1.username, enemyHeroes: p1.heroes });
     }
 }
 
