@@ -78,13 +78,15 @@
         }
         .back-btn:hover { background: rgba(255,255,255,0.2); }
 
+        /* ОТЛАДОЧНАЯ КОНСОЛЬ (Сделал её видимой и читаемой) */
         #debug-log {
             position: absolute; bottom: 0; left: 0; 
-            width: 100%; height: 100px; 
-            background: rgba(0,0,0,0.5); color: #0f0; 
-            font-family: monospace; font-size: 12px; 
+            width: 100%; height: 150px; 
+            background: rgba(0,0,0,0.7); color: #0f0; 
+            font-family: monospace; font-size: 14px; 
             overflow-y: scroll; pointer-events: none;
-            display: none; z-index: 9999;
+            padding: 10px; box-sizing: border-box;
+            z-index: 9999;
         }
     </style>
 </head>
@@ -107,18 +109,17 @@
 </div>
 
 <script>
-// --- ЛОГГЕР ОШИБОК ---
+// --- ЛОГГЕР ---
 function log(msg) {
     console.log(msg);
     const box = document.getElementById('debug-log');
     if(box) {
-        box.style.display = 'block';
         box.innerHTML += `> ${msg}<br>`;
         box.scrollTop = box.scrollHeight;
     }
 }
 window.onerror = function(message, source, lineno) {
-    log(`ERROR: ${message} at line ${lineno}`);
+    log(`<span style="color:red">ERROR: ${message} at line ${lineno}</span>`);
 };
 
 // --- КОНФИГУРАЦИЯ ---
@@ -156,16 +157,20 @@ if (!p1Key || !p2Key) {
     window.location.href = 'lobby.html';
 }
 
+// --- ПОДКЛЮЧЕНИЕ SOCKET.IO ---
 const SOCKET_URL = "https://forest-fight-server.onrender.com";
 let socket;
 
 try {
+    log("Инициализация сокета: " + SOCKET_URL);
     socket = io(SOCKET_URL, {
         reconnection: true,
-        reconnectionAttempts: 20
+        reconnectionAttempts: 20,
+        reconnectionDelay: 2000,
+        timeout: 20000
     });
 } catch (e) {
-    log("Ошибка инициализации сокета: " + e.message);
+    log("CRITICAL SOCKET ERROR: " + e.message);
 }
 
 const V = {
@@ -259,33 +264,42 @@ class Game {
     }
 
     setupNetwork() {
-        if (!socket) { log("Сокет не создан!"); return; }
+        if (!socket) { log("CRITICAL: Socket is null"); return; }
 
-        const tryLogin = () => {
-            if (!this.isLoggedIn && socket.connected) {
-                socket.emit('login', myUsername);
-            }
-        };
+        log("Настройка сети...");
 
-        socket.on('connect', () => { log("Connected!"); tryLogin(); });
-        if (socket.connected) { log("Already connected!"); tryLogin(); }
+        // Слушатели сокетов
+        socket.on('connect', () => { 
+            log("Подключено к серверу! (ID: " + socket.id + ")");
+            log("Отправка логина...");
+            socket.emit('login', myUsername); 
+        });
 
-        const checkInt = setInterval(() => {
-            if (this.isLoggedIn) clearInterval(checkInt);
-            else tryLogin();
-        }, 1000);
+        socket.on('connect_error', (err) => {
+            log("Ошибка подключения: " + err.message);
+        });
+
+        socket.on('disconnect', (reason) => {
+            log("Отключено: " + reason);
+            this.isLoggedIn = false;
+        });
 
         socket.on('loginSuccess', (userData) => {
             if (this.isLoggedIn) return;
             this.isLoggedIn = true;
-            log("Login OK");
-            document.getElementById('debug-log').style.display = 'none';
+            log("Логин успешен: " + userData.username);
+            
+            // Скрываем лог, если всё хорошо
+            setTimeout(() => {
+                document.getElementById('debug-log').style.display = 'none';
+            }, 2000);
+
             this.updateBanner("Поиск соперника...", "grey");
             socket.emit('findMatch', { p1: p1Key, p2: p2Key });
         });
 
         socket.on('gameStart', (data) => {
-            log("Match Found!");
+            log("МАТЧ НАЙДЕН!");
             this.roomName = data.room;
             this.myTeam = data.role;
             const enemyHeroes = data.enemyHeroes || { p1: 'poacher', p2: 'wolf' };
@@ -329,10 +343,11 @@ class Game {
             window.location.href = 'lobby.html';
         });
 
-        socket.on('disconnect', () => {
-            log("Disconnected!");
-            this.isLoggedIn = false;
-        });
+        // ПРОВЕРКА ЕСЛИ УЖЕ ПОДКЛЮЧЕН (при перезагрузке)
+        if (socket.connected) {
+            log("Сокет уже активен, логинимся...");
+            socket.emit('login', myUsername);
+        }
     }
 
     initUnitsWithSync(seedString, enemyHeroes) {
@@ -650,7 +665,6 @@ class Game {
         }
     }
 
-    // --- ФУНКЦИИ ВНУТРИ КЛАССА ---
     initArena() {
         const pad = CFG.wallPadding; 
         const c = CFG.cornerCut; 
@@ -667,7 +681,7 @@ class Game {
             this.walls.push({ p1: points[i], p2: points[(i+1)%points.length] });
         }
     }
-    
+
     drawBackground() {
         const ctx = this.ctx;
         if (ASSETS.bg.complete && ASSETS.bg.naturalWidth !== 0) {
@@ -682,6 +696,184 @@ class Game {
             this.walls.forEach(w => { ctx.moveTo(w.p1.x, w.p1.y); ctx.lineTo(w.p2.x, w.p2.y); });
             ctx.stroke();
         }
+    }
+
+    drawUnit(u) {
+        const ctx = this.ctx;
+        const r = CFG.radius;
+        ctx.save(); ctx.translate(u.x, u.y);
+        if(u.isDead) ctx.filter = 'grayscale(1) brightness(0.5)';
+        ctx.beginPath(); ctx.arc(5,5,r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fill();
+        if (this.state==='AIMING' && u.id === this.activeUnitId && !u.isDead) {
+            ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2); ctx.strokeStyle='#f1c40f'; ctx.lineWidth=5; ctx.stroke();
+        }
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.save(); ctx.clip();
+        const img = ASSETS[u.imgKey];
+        if (img && img.complete && img.naturalWidth !== 0) {
+            const sSize = Math.min(img.width, img.height);
+            const sx = (img.width - sSize) / 2;
+            const sy = (img.height - sSize) / 2;
+            ctx.drawImage(img, sx, sy, sSize, sSize, -r, -r, r*2, r*2);
+        } else {
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fill();
+            ctx.fillStyle='#fff'; ctx.font='45px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(u.emoji, 0, 5); 
+        }
+        ctx.restore();
+        ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.lineWidth=4; 
+        ctx.strokeStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.stroke();
+        const pct = u.hp/u.maxHp;
+        ctx.fillStyle='#333'; ctx.fillRect(-30, r+10, 60, 10);
+        if (u.isDead) {
+            if (u.reviveCount >= CFG.maxRevives) {
+                ctx.fillStyle = '#555'; ctx.fillRect(-28, r+12, 56, 6); 
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#ff0000'; ctx.fillText('❌', 0, -r/2);
+            } else {
+                ctx.fillStyle = '#3498db'; ctx.fillRect(-28, r+12, 56*pct, 6);
+                ctx.font='20px Arial'; ctx.textAlign='center'; ctx.fillStyle='#fff'; ctx.fillText('💀', 0, -r/2);
+            }
+        } else {
+            ctx.fillStyle = u.team==='green'?'#2ecc71':'#e74c3c'; ctx.fillRect(-28, r+12, 56*pct, 6);
+        }
+        ctx.restore();
+    }
+    
+    getDistToLine(u, p1, p2) {
+        const dx = p2.x - p1.x; const dy = p2.y - p1.y;
+        const lenW = Math.sqrt(dx*dx + dy*dy); const nx = dx/lenW; const ny = dy/lenW;
+        const t = ((u.x - p1.x)*nx + (u.y - p1.y)*ny);
+        let cx, cy;
+        if(t < 0) { cx = p1.x; cy = p1.y; } else if(t > lenW) { cx = p2.x; cy = p2.y; } else { cx = p1.x + t*nx; cy = p1.y + t*ny; }
+        return Math.sqrt((u.x-cx)**2 + (u.y-cy)**2);
+    }
+
+    predictHit(u, vec) {
+        let sim = { x: u.x, y: u.y, vx: 0, vy: 0, radius: CFG.radius, team: u.team };
+        const dir = V.norm(vec);
+        sim.vx = dir.x * CFG.launchSpeed; sim.vy = dir.y * CFG.launchSpeed;
+        const maxSteps = 400;
+        let hitPoint = null;
+
+        for (let i = 0; i < maxSteps; i++) {
+            sim.x += sim.vx / CFG.subSteps; sim.y += sim.vy / CFG.subSteps;
+            let hit = false; let nx = 0, ny = 0;
+
+            for (let w of this.walls) {
+                const dist = this.getDistToLine(sim, w.p1, w.p2);
+                if (dist < CFG.radius) {
+                    const dx = w.p2.x - w.p1.x; const dy = w.p2.y - w.p1.y;
+                    const lenW = Math.sqrt(dx*dx + dy*dy); 
+                    const t = ((sim.x - w.p1.x)*(dx/lenW) + (sim.y - w.p1.y)*(dy/lenW));
+                    let cx = w.p1.x + t*(dx/lenW); let cy = w.p1.y + t*(dy/lenW); 
+                    if(t<0){cx=w.p1.x;cy=w.p1.y;} else if(t>lenW){cx=w.p2.x;cy=w.p2.y;}
+                    nx = (sim.x - cx) / dist; ny = (sim.y - cy) / dist;
+                    hit = true; break;
+                }
+            }
+
+            if (!hit) {
+                for (let other of this.units) {
+                    if (other.id === u.id) continue;
+                    const dist = Math.sqrt((sim.x - other.x)**2 + (sim.y - other.y)**2);
+                    if (dist < CFG.radius * 2) {
+                        nx = (sim.x - other.x) / dist; ny = (sim.y - other.y) / dist;
+                        hit = true;
+                        if (other.team !== u.team) {
+                            return { type: 'unit', x: sim.x, y: sim.y, rx: 0, ry: 0, enemy: other };
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (hit) {
+                hitPoint = { x: sim.x, y: sim.y };
+                const dp = sim.vx * nx + sim.vy * ny;
+                sim.vx = (sim.vx - 2 * dp * nx); sim.vy = (sim.vy - 2 * dp * ny);
+                const len = Math.sqrt(sim.vx*sim.vx + sim.vy*sim.vy);
+                const rDir = { x: sim.vx/len, y: sim.vy/len };
+                return { type: 'wall', x: hitPoint.x, y: hitPoint.y, rx: rDir.x, ry: rDir.y };
+            }
+        }
+        return { type: 'none', x: sim.x, y: sim.y };
+    }
+
+    drawAim(u, vec, isEnemy) {
+        if (!u || u.isDead) return;
+
+        const hit = this.predictHit(u, vec);
+        
+        this.ctx.globalAlpha = isEnemy ? 0.4 : 1.0; 
+        this.ctx.beginPath(); this.ctx.moveTo(u.x, u.y); this.ctx.lineTo(hit.x, hit.y);
+        this.ctx.lineWidth = 6; this.ctx.strokeStyle = isEnemy ? '#fff' : 'rgba(255,255,255,0.7)';
+        this.ctx.setLineDash([15,10]); this.ctx.stroke(); this.ctx.setLineDash([]);
+
+        if(hit.type !== 'none') {
+            this.ctx.beginPath(); this.ctx.arc(hit.x, hit.y, 6, 0, Math.PI*2); 
+            this.ctx.fillStyle = '#fff'; this.ctx.fill();
+        }
+
+        if(hit.rx && hit.ry) {
+            const bounceLen = 100; 
+            this.ctx.beginPath(); 
+            this.ctx.moveTo(hit.x, hit.y);
+            this.ctx.lineTo(hit.x + hit.rx * bounceLen, hit.y + hit.ry * bounceLen);
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; 
+            this.ctx.stroke();
+        }
+        
+        if(hit.enemy) {
+            const en = hit.enemy; 
+            this.ctx.save(); 
+            this.ctx.translate(en.x, en.y - 65);
+            this.ctx.fillStyle = 'rgba(0,0,0,0.8)'; 
+            this.ctx.fillRect(-40, -30, 80, 40);
+            this.ctx.strokeStyle = 'white'; 
+            this.ctx.lineWidth = 2; 
+            this.ctx.strokeRect(-40, -30, 80, 40);
+            this.ctx.fillStyle = '#ff5555'; 
+            this.ctx.font = 'bold 24px Arial';
+            this.ctx.textAlign = 'center'; 
+            this.ctx.fillText(`-${u.dmg}`, 0, -2);
+            this.ctx.restore();
+        }
+        this.ctx.globalAlpha = 1.0;
+    }
+
+    updateBanner(txt, type) {
+        const el = document.getElementById('turn-display');
+        el.innerText = txt;
+        el.className = `turn-badge ${type}`;
+    }
+
+    updateUI() {
+        const render = (id, list) => {
+            const div = document.getElementById(id);
+            div.innerHTML='';
+            list.forEach(u => {
+                const d = document.createElement('div');
+                d.className = `hero-icon ${u.isDead?'dead':''}`;
+                if (u.id === this.activeUnitId) d.classList.add('active');
+                const img = ASSETS[u.imgKey];
+                if(img && img.complete && img.naturalWidth !== 0) {
+                     d.style.backgroundImage = `url(${img.src})`; d.innerText = '';
+                } else {
+                     d.innerText = u.emoji; d.style.color = '#fff'; d.style.display = 'flex';
+                }
+                div.appendChild(d);
+            });
+        };
+        render('panel-green', this.units.filter(u=>u.team==='green'));
+        render('panel-red', this.units.filter(u=>u.team==='red'));
+    }
+
+    floatText(x, y, txt, col) {
+        const wrapper = document.getElementById('game-container');
+        const pctX = (x / CFG.width) * 100; const pctY = (y / CFG.height) * 100;
+        const el = document.createElement('div'); el.className='floater'; el.style.left = pctX + '%'; el.style.top = pctY + '%';
+        el.style.color = col; el.innerText = txt;
+        wrapper.appendChild(el);
+        setTimeout(()=>el.remove(), 1200);
     }
 }
 
